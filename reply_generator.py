@@ -33,6 +33,7 @@ class ReplyGenerator:
         goal_result: dict,
         chat_history: Optional[list[dict]] = None,
         my_last_message: Optional[str] = None,
+        conversation_context: Optional[str] = None,
     ) -> dict:
         """生成回复。
 
@@ -48,7 +49,7 @@ class ReplyGenerator:
             {"reply": str, "strategy_used": str, "goal": str}
         """
         system_prompt = self._build_system_prompt(card, goal_result)
-        user_prompt = self._build_user_prompt(ms, chat_history, my_last_message)
+        user_prompt = self._build_user_prompt(ms, chat_history, my_last_message, conversation_context)
 
         reply = llm_call(system_prompt, user_prompt)
         return {
@@ -124,9 +125,15 @@ class ReplyGenerator:
         ms: MessageState,
         chat_history: Optional[list[dict]],
         my_last_message: Optional[str],
+        conversation_context: Optional[str] = None,
     ) -> str:
-        """构建用户提示词：关系上下文 + 对话历史 + 她的消息。"""
+        """构建用户提示词：关系上下文 + 对话上下文 + 对话历史 + 她的消息。"""
         parts = []
+
+        # 三层对话上下文（来自 context_builder.py）
+        if conversation_context:
+            parts.append(conversation_context)
+            parts.append("")
 
         # 关系上下文
         parts.append("## 当前关系状态")

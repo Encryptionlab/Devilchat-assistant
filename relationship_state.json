@@ -18,7 +18,25 @@
     "可选值4": "none 无冲突 | mild 轻微矛盾 | active 正在争吵 | severe 严重冲突",
 
     "近期关键事件": ["明天她考试"],
-    "近期事件示例": ["昨天吵架", "周末约会", "今天她考试", "她工作压力大"]
+    "近期事件示例": ["昨天吵架", "周末约会", "今天她考试", "她工作压力大"],
+
+    "conflict_level": 0,
+    "conflict_level_说明": "由 MemoryUpdater 自动维护。0=无冲突 5=严重冲突",
+
+    "recurring_topics": [],
+    "recurring_topics_说明": "反复出现的话题（同一 topic 在 10 个 Conversation 中出现 ≥3 次后自动写入）",
+
+    "unresolved_topics": [],
+    "unresolved_topics_说明": "未解决的问题（Conversation outcome=unresolved 时自动写入，resolved 时自动移除）",
+
+    "future_events": [],
+    "future_events_说明": "即将发生的事件，手动维护或从对话中提取",
+
+    "preferences": [],
+    "preferences_说明": "她的偏好和习惯，手动维护",
+
+    "personality_traits": [],
+    "personality_traits_说明": "性格特征，手动维护"
   },
 
   "更新日志": [

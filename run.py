@@ -20,6 +20,11 @@ from strategy_selector import StrategySelector
 from reply_generator import ReplyGenerator
 from expression_enhancer import ExpressionEnhancer
 
+# NEW: Conversation Engine (v2 MVP)
+from conversation import ConversationManager
+from context_builder import ContextBuilder
+from datetime import datetime, timezone
+
 # ---- 配置 ----
 ROOT = Path(__file__).parent
 BASE_URL = "https://opencode.ai/zen/go/v1/chat/completions"
@@ -131,9 +136,37 @@ print(f"reasoning: {goal_result['reasoning']}")
 print(f"alternatives: {goal_result['alternatives']}")
 print()
 
-# ---- 5. 策略选择 (规则) ----
+# ---- 5. Conversation 引擎 (NEW: v2 MVP) ----
 print("=" * 60)
-print("4. 策略选择 (Strategy Selection)")
+print("4. Conversation 引擎 (Conversation Engine)")
+print("=" * 60)
+
+timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+conv_mgr = ConversationManager()
+conv, conv_switched = conv_mgr.process_message(HER_MESSAGE, timestamp, goal_result["goal"])
+
+if conv_switched:
+    print(f"[Conversation] 新对话: topic={conv.topic}, id={conv.id}")
+else:
+    print(f"[Conversation] 继续: topic={conv.topic}, goal={conv.current_goal}, msgs={len(conv.message_ids)}")
+
+# 构建三层上下文
+# 加载原始 relationship_state（含 recurring_topics 等新字段）
+import json
+rs_file = ROOT / "relationship_state.json"
+if rs_file.exists():
+    rs_raw = json.loads(rs_file.read_text(encoding="utf-8")).get("relationship_state", rs)
+else:
+    rs_raw = {}
+
+cb = ContextBuilder(rs_raw, conv, [{"role": "她", "content": HER_MESSAGE}])
+formatted_context = cb.format_for_llm()
+print(f"[Context] 已构建三层上下文")
+print()
+
+# ---- 6. 策略选择 (规则) ----
+print("=" * 60)
+print("5. 策略选择 (Strategy Selection)")
 print("=" * 60)
 
 selector = StrategySelector(relationship_state=rs)
@@ -160,9 +193,9 @@ for i, (card, score, reasons) in enumerate(strategy_result["candidates"]):
 
 print()
 
-# ---- 5. 回复生成 (LLM) ----
+# ---- 7. 回复生成 (LLM) ----
 print("=" * 60)
-print("5. 回复生成 (Reply Generation)")
+print("6. 回复生成 (Reply Generation)")
 print("=" * 60)
 
 if strategy_result["primary"]:
@@ -173,15 +206,16 @@ if strategy_result["primary"]:
         strategy_result["primary"],
         goal_result,
         chat_history=[{"role": "她", "content": HER_MESSAGE}],
+        conversation_context=formatted_context,
     )
     print(reply_result["reply"])
     print()
     print(f"(strategy: {reply_result['strategy_used']}, goal: {reply_result['goal']})")
 
-    # ---- 6. 表达增强 (LLM) ----
+    # ---- 8. 表达增强 (LLM) ----
     print()
     print("=" * 60)
-    print("6. 表达增强 (Expression Enhancement)")
+    print("7. 表达增强 (Expression Enhancement)")
     print("=" * 60)
 
     enhancer = ExpressionEnhancer(relationship_state=rs)
