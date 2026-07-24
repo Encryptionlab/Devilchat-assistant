@@ -1,0 +1,74 @@
+{
+  "id": "escalating_conflict",
+  "name": "扩大冲突",
+  "type": "core_strategy",
+  "source": "《魔鬼聊天术》Part 1 第4节",
+  "goal": "将女方的调侃/否定信号转化为调情升温，制造暧昧氛围",
+
+  "apply_when": {
+    "emotions": ["开心", "兴奋", "期待", "无聊"],
+    "relationship_stage": ["ambiguous", "dating", "stable"],
+    "conversation_stage": ["elaborating", "escalating"],
+    "trigger_signal": "女方向你发出带有调侃、质疑、否定色彩的信息——这是好感指标"
+  },
+  "not_apply_when": {
+    "emotions": ["严重悲伤", "愤怒", "焦虑"],
+    "relationship_stage": ["acquaintance", "conflict"],
+    "no_trigger": "女方尚未主动发起任何冲突信号时，男方不可主动发起"
+  },
+  "risk_level": "medium",
+  "requirements": {
+    "description": "女方已发起调侃/冲突信号",
+    "any": [
+      {"field": "conflict_signal", "op": "eq", "value": "her_initiated"},
+      {"field": "surface_intent_scores.teasing", "op": "gt", "value": 0.3},
+      {"field": "surface_intent_scores.conflict", "op": "gt", "value": 0.2}
+    ]
+  },
+  "target_need": ["ATTENTION", "ENTERTAINMENT", "PARTICIPATION"],
+  "expected_effect": {
+    "attraction": 3,
+    "emotional_engagement": 3,
+    "relationship_heat": 3,
+    "conversation_extension": 2
+  },
+
+  "mechanism": "女方主动发起冲突 = 好感信号。不解释、不退缩、不岔开话题，顺着冲突方向继续升级，把对话锁定在'你和她的关系'上。解释 = 平息冲突 = 终结暧昧。",
+  "rules": [
+    "冲突必须由女方先发起，男方不可主动发起冲突",
+    "回应指向'你我关系'，不可转向客观话题",
+    "每次回应在上一轮基础上继续扩大，形成回合制升级",
+    "唯一例外：巧合事件可从逻辑上自然导出冲突时，男方可主动"
+  ],
+  "anti_patterns": [
+    "解释自己 → 平息冲突，对话变无趣",
+    "傻笑/沉默 → 错失升温窗口",
+    "转向客观话题 → 脱离两人关系"
+  ],
+
+  "examples": [
+    {
+      "context": "搭讪后微信初聊",
+      "input": "女：看到漂亮女孩就要认识，你不会是个坏人吧？",
+      "response": "男：我呀，遇到好人就是好人，遇到坏人就是坏人，这就看你是什么人了。",
+      "why": "不解释人品，转而把'好坏'的判定抛回给她，锁定你我关系"
+    },
+    {
+      "context": "对方接招后继续扩大",
+      "input": "女：那你看我是什么人呢？",
+      "response": "男：你一看就是大好人，唉，我太肤浅了，就会以貌取人。",
+      "why": "冲突对方（好人）+ 冲突自己（肤浅），双重扩大"
+    },
+    {
+      "context": "女孩顺口释放情绪（泛泛抱怨也可抓取）",
+      "input": "女：唉，有的人命真好。",
+      "response": "男：好人才有好报嘛，我掐指一算，小×童鞋本月再做一件善事就能晋级好人了。",
+      "why": "'有的人命真好'虽然是泛泛抱怨，但恰好构成冲突信号，抓住即扩大"
+    }
+  ],
+
+  "llm_instruction": "对方的话语中包含对你的调侃、质疑或轻度否定。不要解释自己，不要转向客观话题。顺着她的冲突方向，把话题锁定在'你和她的关系'上继续调侃。你可以同时冲突她、也冲突自己。每次回应都应该比上一轮更进一步。",
+
+  "success_metric": "女方继续接招调侃，对话回合数增加，关系温度上升",
+  "related": ["devils_fun_rule"]
+}

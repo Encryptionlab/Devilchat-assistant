@@ -1,0 +1,21 @@
+{
+  "matrix": [
+    {"emotion": "委屈", "need": "被理解", "strategy": "empathy", "priority": 1},
+    {"emotion": "难过", "need": "被关注", "strategy": "companionship", "priority": 1},
+    {"emotion": "焦虑", "need": "安全感", "strategy": "reassurance", "priority": 1},
+    {"emotion": "开心", "need": "分享欲", "strategy": "compliment", "priority": 1},
+    {"emotion": "开心", "need": "分享欲", "strategy": "banter", "priority": 2},
+    {"emotion": "无聊", "need": "刺激", "strategy": "banter", "priority": 1},
+    {"emotion": "无聊", "need": "刺激", "strategy": "open_ended_questions", "priority": 2},
+    {"emotion": "冷淡", "need": "参与感", "strategy": "open_ended_questions", "priority": 1},
+    {"emotion": "愤怒", "need": "被尊重", "strategy": "conflict_deescalation", "priority": 1},
+    {"emotion": "失望", "need": "被理解", "strategy": "empathy", "priority": 1},
+    {"emotion": "疲惫", "need": "陪伴", "strategy": "companionship", "priority": 1},
+    {"emotion": "孤独", "need": "陪伴", "strategy": "companionship", "priority": 1},
+    {"emotion": "期待", "need": "认同感", "strategy": "compliment", "priority": 2},
+    {"emotion": "兴奋", "need": "分享欲", "strategy": "listening", "priority": 1},
+    {"emotion": "紧张", "need": "安全感", "strategy": "reassurance", "priority": 1},
+    {"emotion": "羞涩", "need": "被理解", "strategy": "empathy", "priority": 2},
+    {"emotion": "冷漠", "need": "参与感", "strategy": "open_ended_questions", "priority": 1}
+  ]
+}

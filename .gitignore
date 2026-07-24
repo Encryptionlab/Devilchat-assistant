@@ -1,0 +1,21 @@
+# API keys
+ds.txt
+
+# Book (copyrighted)
+book/
+
+# Design docs (local only)
+design/
+design_archive/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

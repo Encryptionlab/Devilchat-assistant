@@ -1,0 +1,25 @@
+GOALS:
+
+  EXPRESS_MORE:
+    继续表达
+
+  REDUCE_NEGATIVE:
+    缓解负面情绪
+
+  BUILD_SECURITY:
+    建立安全感
+
+  INCREASE_PARTICIPATION:
+    制造参与感
+
+  AMPLIFY_POSITIVE:
+    放大积极情绪
+
+  INCREASE_INTIMACY:
+    推进亲密度
+
+  REPAIR_CONNECTION:
+    修复连接
+
+  DEESCALATE_CONFLICT:
+    结束冲突

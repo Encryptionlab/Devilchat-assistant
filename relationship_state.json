@@ -1,0 +1,33 @@
+{
+  "说明": "此文件手动维护。所有枚举值定义见 libraries/RELATIONSHIP_STATE_library.md",
+
+  "relationship_state": {
+    "当前关系阶段": "ambiguous 暧昧",
+    "可选值": "stranger 陌生人 | acquaintance 刚认识 | friend 普通朋友 | ambiguous 暧昧 | dating 恋爱 | stable 长期稳定 | conflict 冲突期 | breakup_recovery 分手恢复期",
+
+    "关系热度": "warm",
+    "可选值2": "hot 火热 | warm 温暖 | neutral 中性 | cold 冷淡 | freezing 冰冻",
+
+    "对方依恋风格":"secure",
+    "可选值3": "secure 安全型 | anxious 焦虑型 | avoidant 回避型 | fearful 恐惧型",
+
+    "信任程度_0到100": 60,
+    "亲密程度_0到100": 40,
+
+    "冲突状态": "none",
+    "可选值4": "none 无冲突 | mild 轻微矛盾 | active 正在争吵 | severe 严重冲突",
+
+    "近期关键事件": ["明天她考试"],
+    "近期事件示例": ["昨天吵架", "周末约会", "今天她考试", "她工作压力大"]
+  },
+
+  "更新日志": [
+    {
+      "日期": "2026-07-22",
+      "修改字段": "初始化",
+      "旧值": null,
+      "新值": "initial",
+      "原因": "创建关系状态模板"
+    }
+  ]
+}
