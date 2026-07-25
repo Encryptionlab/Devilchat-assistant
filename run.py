@@ -13,22 +13,25 @@ from datetime import datetime, timezone
 
 import requests
 
-from message_understanding import MessageUnderstanding, load_relationship_state
-from need_recognition import NeedRecognizer
-from goal_planner import GoalPlanner
-from strategy_selector import StrategySelector
-from reply_generator import ReplyGenerator
-from expression_enhancer import ExpressionEnhancer
-from conversation import ConversationManager
-from context_builder import ContextBuilder
-from memory_updater import MemoryUpdater
-from summarizer import summarize
+# Windows GBK 终端兼容
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
+from src.message_understanding import MessageUnderstanding, load_relationship_state
+from src.need_recognition import NeedRecognizer
+from src.goal_planner import GoalPlanner
+from src.strategy_selector import StrategySelector
+from src.reply_generator import ReplyGenerator
+from src.expression_enhancer import ExpressionEnhancer
+from src.conversation import ConversationManager
+from src.context_builder import ContextBuilder
+from src.memory_updater import MemoryUpdater
+from src.summarizer import summarize
 
 # ---- 配置 ----
 ROOT = Path(__file__).parent
 BASE_URL = "https://opencode.ai/zen/go/v1/chat/completions"
 MODEL = "deepseek-v4-flash"
-RS_PATH = ROOT / "relationship_state.json"
+RS_PATH = ROOT / "data" / "relationship_state.json"
 
 key_file = ROOT / "ds.txt"
 if key_file.exists():
@@ -99,7 +102,7 @@ def _print_rs(rs: dict):
 def run_interactive():
     # 首次启动 → 引导初始化
     if not RS_PATH.exists():
-        from bootstrap import bootstrap
+        from src.bootstrap import bootstrap
         bootstrap(llm_chat)
 
     rs = load_relationship_state()

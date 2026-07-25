@@ -2,7 +2,7 @@
 ds.txt
 
 # Runtime data
-conversations.json
+data/conversations.json
 
 # Book (copyrighted)
 book/

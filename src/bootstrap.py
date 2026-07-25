@@ -11,8 +11,8 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-ROOT_DIR = Path(__file__).parent
-RS_PATH = ROOT_DIR / "relationship_state.json"
+ROOT_DIR = Path(__file__).parent.parent
+RS_PATH = ROOT_DIR / "data" / "relationship_state.json"
 
 LlmCallable = Callable[[str, str], str]
 

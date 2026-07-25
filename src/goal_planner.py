@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from message_understanding import MessageState, NEED_VALUES
+from .message_understanding import MessageState, NEED_VALUES
 
 # 来自 libraries/goal_libary.md
 GOAL_DEFINITIONS: dict[str, str] = {

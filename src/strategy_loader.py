@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-STRATEGIES_DIR = Path(__file__).parent / "strategies"
+STRATEGIES_DIR = Path(__file__).parent.parent / "strategies"
 
 
 class StrategyCard:

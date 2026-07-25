@@ -23,8 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-ROOT_DIR = Path(__file__).parent
-DEFAULT_RS_PATH = ROOT_DIR / "relationship_state.json"
+ROOT_DIR = Path(__file__).parent.parent
+DEFAULT_RS_PATH = ROOT_DIR / "data" / "relationship_state.json"
 
 
 class MemoryUpdater:

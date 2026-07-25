@@ -25,8 +25,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-ROOT_DIR = Path(__file__).parent
-CONVERSATIONS_FILE = ROOT_DIR / "conversations.json"
+ROOT_DIR = Path(__file__).parent.parent
+CONVERSATIONS_FILE = ROOT_DIR / "data" / "conversations.json"
 MAX_STORED_CONVERSATIONS = 50
 
 

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from message_understanding import MessageState
-from strategy_loader import StrategyCard
+from .message_understanding import MessageState
+from .strategy_loader import StrategyCard
 
 LlmCallable = Callable[[str, str], str]
 

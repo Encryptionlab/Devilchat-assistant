@@ -18,9 +18,9 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-ROOT_DIR = Path(__file__).parent
+ROOT_DIR = Path(__file__).parent.parent
 LIBRARIES_DIR = ROOT_DIR / "libraries"
-RELATIONSHIP_STATE_PATH = ROOT_DIR / "relationship_state.json"
+RELATIONSHIP_STATE_PATH = ROOT_DIR / "data" / "relationship_state.json"
 
 
 # ============================================================

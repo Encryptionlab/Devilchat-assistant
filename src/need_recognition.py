@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from message_understanding import MessageState, NEED_VALUES
+from .message_understanding import MessageState, NEED_VALUES
 
 TOP_K = 3
 

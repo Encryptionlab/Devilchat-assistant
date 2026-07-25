@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from message_understanding import MessageState
-from strategy_loader import StrategyLoader, StrategyCard
+from .message_understanding import MessageState
+from .strategy_loader import StrategyLoader, StrategyCard
 
 
 # 英语 emotion → 中文情绪类别（用于 not_apply_when 匹配）
