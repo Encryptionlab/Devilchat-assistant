@@ -314,10 +314,22 @@ def _format_need_keys() -> str:
 # 关系状态加载
 # ============================================================
 
+def _default_state() -> dict:
+    return {
+        "stage": "",
+        "temperature": "",
+        "attachment_style": None,
+        "trust_level": 0,
+        "intimacy_level": 0,
+        "conflict_status": "none",
+        "recent_events": [],
+    }
+
+
 def load_relationship_state(path: Optional[Path] = None) -> dict:
     filepath = path or RELATIONSHIP_STATE_PATH
     if not filepath.exists():
-        raise FileNotFoundError(f"关系状态文件不存在: {filepath}")
+        return _default_state()
 
     with open(filepath, encoding="utf-8") as f:
         raw = json.load(f)

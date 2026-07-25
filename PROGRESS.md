@@ -1,6 +1,6 @@
 # 项目进度
 
-最后更新: 2026-07-24 (Conversation Engine v2 MVP 上线)
+最后更新: 2026-07-25 (交互式长期记忆系统上线)
 
 ## 流水线
 
@@ -27,6 +27,11 @@ Message → Conversation → Relationship Memory
 | 9 | 风险检查 | ⬜ | |
 | 10 | 回复评分 | ⬜ | |
 | 11 | 编排脚本 | ⬜ | |
+| 12 | 文件不存在容错 | ✅ | load_relationship_state 返回默认值而非崩溃 |
+| 13 | 引导式初始化 | ✅ | bootstrap.py: 用户描述关系 → LLM 提取画像 → 写入 JSON |
+| 14 | Conversation 摘要器 | ✅ | summarizer.py: Conversation 关闭时 LLM 生成 summary + outcome + key_points |
+| 15 | MemoryUpdater 接入 | ✅ | Conversation 关闭钩子中自动调用 |
+| 16 | 交互式循环 | ✅ | run.py 重写: while True 循环，支持 /quit /status /history |
 
 ## 基础设施
 
@@ -37,13 +42,15 @@ Message → Conversation → Relationship Memory
 | 统一 Need 库 (need_library.md) | ✅ | 12 个 needs，行为化描述 |
 | 消息理解库 (MESSAGE_UNDERSTANDING_library.md) | ✅ | 13 字段 schema |
 | 关系状态库 (RELATIONSHIP_STATE_library.md) | ✅ | 7 层 schema |
-| 运行入口 (run.py) | ✅ | 全流水线：消息理解 → 需求识别 → 目标确定 → Conversation → 上下文构建 → 策略选择 → 回复生成 |
+| 运行入口 (run.py) | ✅ | 交互式循环 + 单条模式兼容，Conversation 关闭钩子 + MemoryUpdater 写入 |
 | 策略选择器 (strategy_selector.py) | ✅ | 双维度过滤 + need/context 打分 + 动态风险衰减 |
 | 回复生成器 (reply_generator.py) | ✅ | 策略卡指令 + 三层上下文 + 对话历史 → LLM prompt |
 | 表达增强器 (expression_enhancer.py) | ✅ | 口语化 + 语气匹配 + 关系阶段感知 |
 | Conversation 管理器 (conversation.py) | ✅ | 8话题关键词检测 + 20结束信号 + 3层优先级裁决 + 超时兜底 + 持久化 |
 | 上下文构建器 (context_builder.py) | ✅ | 三层精选上下文 → LLM prompt 格式化 |
-| Memory Updater (memory_updater.py) | ✅ | 4条纯规则 + 衰减机制 + 保守写入 |
+| Memory Updater (memory_updater.py) | ✅ | 4条纯规则 + 衰减机制 + 保守写入，已接入 Conversation 关闭钩子 |
+| 引导式初始化 (bootstrap.py) | ✅ | 首次运行引导用户描述关系 → LLM 提取画像 |
+| Conversation 摘要器 (summarizer.py) | ✅ | 关闭时 LLM 生成 summary + outcome + key_points |
 
 ## 决策记录
 
@@ -55,3 +62,6 @@ Message → Conversation → Relationship Memory
 - 边界检测不依赖 Message Understanding，用时间+关键词+结束信号（降低错误放大链路风险）
 - 状态只保留 active/closed，Goal Chain/Emotion Trajectory 后置到 P3
 - Memory 写入纯规则触发（次数+outcome），保守优先：不确定就不写
+- 首次运行采用 B 路线引导式初始化（用户描述 → LLM 提取画像），stage 永久人工确认（2026-07-25）
+- 运行模式改为交互式循环（while True），Conversation 关闭时自动触发摘要生成 + 长期记忆写入（2026-07-25）
+- 纠错机制暂缓，等问题真实出现再设计（2026-07-25）
