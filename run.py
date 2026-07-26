@@ -8,10 +8,13 @@
 
 import json
 import sys
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Windows GBK 终端兼容
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -40,18 +43,54 @@ else:
     print("[错误] 找不到 ds.txt，请创建并写入 api = your-key")
     sys.exit(1)
 
+# 带重试的 Session（处理 SSL/连接/429/502/503/504）
+_session: requests.Session | None = None
 
-def llm_chat(system_prompt: str, user_prompt: str) -> str:
-    resp = requests.post(
-        BASE_URL,
-        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-        json={"model": MODEL, "max_tokens": 4096,
-              "messages": [{"role": "system", "content": system_prompt},
-                           {"role": "user", "content": user_prompt}]},
-    )
-    if resp.status_code != 200:
-        raise RuntimeError(f"API 返回 {resp.status_code}: {resp.text}")
-    return resp.json()["choices"][0]["message"]["content"]
+
+def _get_session() -> requests.Session:
+    global _session
+    if _session is None:
+        retry = Retry(
+            total=3,
+            backoff_factor=1.0,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["POST"],
+        )
+        _session = requests.Session()
+        _session.mount("https://", HTTPAdapter(max_retries=retry))
+    return _session
+
+
+def llm_chat(system_prompt: str, user_prompt: str, retries: int = 5) -> str:
+    last_error = None
+    for attempt in range(retries):
+        try:
+            resp = _get_session().post(
+                BASE_URL,
+                headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+                json={"model": MODEL, "max_tokens": 4096,
+                      "messages": [{"role": "system", "content": system_prompt},
+                                   {"role": "user", "content": user_prompt}]},
+                timeout=120,
+            )
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"]
+            if resp.status_code == 400:
+                # 400 通常是上游瞬时故障，可重试
+                last_error = RuntimeError(f"API 返回 400: {resp.text[:300]}")
+            elif resp.status_code == 401:
+                raise RuntimeError(f"API Key 无效: {resp.text[:200]}")
+            else:
+                last_error = RuntimeError(f"API 返回 {resp.status_code}: {resp.text[:300]}")
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.SSLError) as e:
+            last_error = e
+        if attempt < retries - 1:
+            wait = 2 ** attempt
+            print(f"  [重试 {attempt + 1}/{retries}，等待 {wait}s...]", flush=True)
+            time.sleep(wait)
+    raise RuntimeError(f"API 调用失败（已重试 {retries} 次）: {last_error}")
 
 
 # ---- 单条模式（兼容旧用法）----

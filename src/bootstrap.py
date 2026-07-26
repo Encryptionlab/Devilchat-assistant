@@ -70,12 +70,14 @@ def bootstrap(llm_chat: LlmCallable) -> None:
 
     print("\n正在分析你描述的关系...")
 
+    llm_output = ""
     try:
         llm_output = llm_chat(EXTRACTION_PROMPT, user_input)
         data = json.loads(_strip_fence(llm_output))
-    except (json.JSONDecodeError, Exception) as e:
+    except Exception as e:
         print(f"[警告] LLM 解析失败: {e}")
-        print(f"原始输出: {llm_output}")
+        if llm_output:
+            print(f"原始输出: {llm_output[:200]}")
         print("将使用最小默认值继续。")
         data = _minimal_default()
 

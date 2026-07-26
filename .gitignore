@@ -4,6 +4,9 @@ ds.txt
 # Runtime data
 data/conversations.json
 
+# Test output
+test_output/
+
 # Book (copyrighted)
 book/
 
