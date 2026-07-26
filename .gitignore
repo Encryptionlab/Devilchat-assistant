@@ -1,8 +1,10 @@
 # API keys
 ds.txt
 
-# Runtime data
+# Runtime data (personal, not for GitHub)
 data/conversations.json
+data/relationship_state.json
+data/mock_wcf_story_3000.jsonl
 
 # Test output
 test_output/
@@ -13,6 +15,10 @@ book/
 # Design docs (local only)
 design/
 design_archive/
+docs/待完成/
+
+# Archive
+history/
 
 # Python
 __pycache__/

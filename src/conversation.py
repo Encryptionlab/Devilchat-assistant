@@ -143,7 +143,7 @@ class Conversation:
     outcome: str | None = None           # repaired | unresolved | neutral
     message_ids: list[str] = field(default_factory=list)
     key_points: list[str] = field(default_factory=list)   # summary 携带的关键信息
-
+    messages_log: list[dict] = field(default_factory=list, repr=False)  # 最近消息内容，供摘要/评估使用
     _pending_close: bool = field(default=False, repr=False)  # 结束信号已触发，等待确认
 
     def to_dict(self) -> dict:
@@ -206,6 +206,7 @@ class ConversationManager:
         # ---- 无活跃 Conversation → 新建 ----
         if self._active is None:
             self._active = self._create(topic, timestamp, current_goal)
+            self._record_message(message_content, "她", timestamp)
             self._save()
             return self._active, True  # True 表示"新 Conversation 开始"
 
@@ -242,8 +243,78 @@ class ConversationManager:
             self._active = self._create(topic, timestamp, current_goal)
             switched = True
 
+        self._record_message(message_content, "她", timestamp)
         self._save()
         return self._active, switched
+
+    def observe_message(
+        self,
+        message_content: str,
+        timestamp: str,
+        role: str = "她",
+        topic_override: str | None = None,
+    ) -> tuple[Conversation, bool, bool]:
+        """观测模式：记录消息流，不绑定 goal/strategy。用于 WCF 持续监听。
+
+        与 process_message 的核心区别：
+        - 不设置 current_goal（没有策略目标）
+        - 额外返回 has_closed（是否触发了 Conversation 关闭）
+        - 相同的边界检测 + 持久化逻辑
+
+        Args:
+            message_content: 消息文本
+            timestamp: ISO8601 时间戳
+            role: '她' 或 '我'
+            topic_override: 可选的话题覆盖（来自 LLM 检测）
+
+        Returns:
+            (current_conv, is_new, has_closed)
+            - current_conv: 当前活跃的 Conversation
+            - is_new: 是否创建了新 Conversation
+            - has_closed: 此次操作是否导致了旧 Conversation 关闭
+        """
+        topic = detect_topic(message_content, llm_topic=topic_override)
+        closure_detected = detect_closure(message_content)
+        has_closed = False
+
+        if self._active is None:
+            self._active = self._create(topic, timestamp, None)
+            self._record_message(message_content, role, timestamp)
+            self._save()
+            return self._active, True, False
+
+        timeout_reason = self._check_timeout(timestamp)
+        if timeout_reason:
+            self._close_active(reason=timeout_reason, timestamp=timestamp)
+            has_closed = True
+            self._active = self._create(topic, timestamp, None)
+            self._record_message(message_content, role, timestamp)
+            self._save()
+            return self._active, True, True
+
+        decision = self._decide_boundary(
+            topic=topic,
+            closure_detected=closure_detected,
+            timestamp=timestamp,
+        )
+
+        if decision == "close_and_new":
+            self._close_active(reason="boundary_decision", timestamp=timestamp)
+            has_closed = True
+            self._active = self._create(topic, timestamp, None)
+        elif decision == "continue":
+            self._active.last_message_time = timestamp
+        elif decision == "pending_close":
+            self._active._pending_close = True
+            self._active.last_message_time = timestamp
+        elif decision == "confirm_close":
+            self._close_active(reason="closure_confirmed", timestamp=timestamp)
+            has_closed = True
+            self._active = self._create(topic, timestamp, None)
+
+        self._record_message(message_content, role, timestamp)
+        self._save()
+        return self._active, decision in ("close_and_new", "confirm_close"), has_closed
 
     def get_active_conversation(self) -> Conversation | None:
         """获取当前活跃 Conversation。"""
@@ -382,6 +453,18 @@ class ConversationManager:
     @staticmethod
     def _make_message_id() -> str:
         return f"msg_{uuid.uuid4().hex[:8]}"
+
+    def _record_message(self, content: str, role: str, timestamp: str) -> None:
+        """记录消息到当前活跃 Conversation 的 messages_log。最多保留最近 100 条。"""
+        if self._active is None:
+            return
+        self._active.messages_log.append({
+            "role": role,
+            "content": content,
+            "timestamp": timestamp,
+        })
+        if len(self._active.messages_log) > 100:
+            self._active.messages_log = self._active.messages_log[-100:]
 
     # ---- 持久化 ----
 
