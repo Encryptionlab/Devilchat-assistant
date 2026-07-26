@@ -261,34 +261,70 @@ class ConversationManager:
         - 额外返回 has_closed（是否触发了 Conversation 关闭）
         - 相同的边界检测 + 持久化逻辑
 
-        Args:
-            message_content: 消息文本
-            timestamp: ISO8601 时间戳
-            role: '她' 或 '我'
-            topic_override: 可选的话题覆盖（来自 LLM 检测）
+        内部委托给 log_message() + process_boundary() 两阶段。
+        需要拆分调用时（如在 MU 前后分别执行），直接调两个阶段方法。
+        """
+        conv, is_new = self.log_message(message_content, timestamp, role)
+        conv, switched, has_closed = self.process_boundary(timestamp, topic_override)
+        return conv, is_new, has_closed
+
+    def log_message(
+        self,
+        message_content: str,
+        timestamp: str,
+        role: str = "她",
+    ) -> tuple[Conversation, bool]:
+        """阶段 1：轻量记录消息到 messages_log，不做边界检测。
+
+        话题检测仅使用关键词（无 LLM topic_override），
+        LLM 话题在阶段 2 process_boundary() 中通过 topic_override 注入。
 
         Returns:
-            (current_conv, is_new, has_closed)
-            - current_conv: 当前活跃的 Conversation
-            - is_new: 是否创建了新 Conversation
-            - has_closed: 此次操作是否导致了旧 Conversation 关闭
+            (current_conv, is_new) — 是否创建了新 Conversation
         """
-        topic = detect_topic(message_content, llm_topic=topic_override)
-        closure_detected = detect_closure(message_content)
-        has_closed = False
+        topic = detect_topic(message_content, llm_topic=None)
 
         if self._active is None:
             self._active = self._create(topic, timestamp, None)
             self._record_message(message_content, role, timestamp)
             self._save()
-            return self._active, True, False
+            return self._active, True
+
+        self._record_message(message_content, role, timestamp)
+        self._save()
+        return self._active, False
+
+    def process_boundary(
+        self,
+        timestamp: str,
+        topic_override: str | None = None,
+    ) -> tuple[Conversation, bool, bool]:
+        """阶段 2：边界检测，使用 LLM 话题（topic_override）。
+
+        应在 MU 完成后调用，此时 topic_override 来自 LLM 检测结果。
+        读取 messages_log 中最后一条消息用于 closure detection。
+
+        Returns:
+            (current_conv, switched, has_closed)
+        """
+        if self._active is None:
+            return None, False, False
+
+        last_msg = self._active.messages_log[-1] if self._active.messages_log else None
+        if last_msg is None:
+            return self._active, False, False
+
+        content = last_msg.get("content", "")
+        topic = detect_topic(content, llm_topic=topic_override)
+        closure_detected = detect_closure(content)
+        switched = False
+        has_closed = False
 
         timeout_reason = self._check_timeout(timestamp)
         if timeout_reason:
             self._close_active(reason=timeout_reason, timestamp=timestamp)
             has_closed = True
             self._active = self._create(topic, timestamp, None)
-            self._record_message(message_content, role, timestamp)
             self._save()
             return self._active, True, True
 
@@ -302,6 +338,7 @@ class ConversationManager:
             self._close_active(reason="boundary_decision", timestamp=timestamp)
             has_closed = True
             self._active = self._create(topic, timestamp, None)
+            switched = True
         elif decision == "continue":
             self._active.last_message_time = timestamp
         elif decision == "pending_close":
@@ -311,10 +348,10 @@ class ConversationManager:
             self._close_active(reason="closure_confirmed", timestamp=timestamp)
             has_closed = True
             self._active = self._create(topic, timestamp, None)
+            switched = True
 
-        self._record_message(message_content, role, timestamp)
         self._save()
-        return self._active, decision in ("close_and_new", "confirm_close"), has_closed
+        return self._active, switched, has_closed
 
     def get_active_conversation(self) -> Conversation | None:
         """获取当前活跃 Conversation。"""

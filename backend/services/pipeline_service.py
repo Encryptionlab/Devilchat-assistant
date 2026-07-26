@@ -34,15 +34,22 @@ class PipelineService:
         self._conv_mgr = ConversationManager(storage_path=CONV_PATH)
         return self._conv_mgr
 
-    async def process_message(self, her_msg: str, chat_history: list[dict]) -> dict:
-        """Run the full pipeline and return a complete ChatResponse dict."""
+    async def process_message(self, her_msg: str, chat_history: list[dict],
+                              ms_override=None) -> dict:
+        """Run the full pipeline and return a complete ChatResponse dict.
+
+        If ms_override is provided (MessageState), skip MessageUnderstanding LLM call.
+        """
         rs = await self.state.load_relationship_state()
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
         # Step 1: Message Understanding (LLM #1)
-        mu = MessageUnderstanding()
-        llm_result = await self.llm.chat(mu.system_prompt, mu.build_user_prompt([{"role": "她", "content": her_msg}]))
-        ms = mu.parse_to_state(llm_result)
+        if ms_override is not None:
+            ms = ms_override
+        else:
+            mu = MessageUnderstanding()
+            llm_result = await self.llm.chat(mu.system_prompt, mu.build_user_prompt([{"role": "她", "content": her_msg}]))
+            ms = mu.parse_to_state(llm_result)
 
         # Step 2: Need Recognition (rules)
         need_result = NeedRecognizer(rs).prioritize(ms)
@@ -271,7 +278,13 @@ class PipelineService:
     async def observe_messages(
         self, messages: list[dict], trigger_evaluator: bool = True
     ) -> dict:
-        """观测模式：记录消息流，不绑定策略/目标。"""
+        """观测模式：记录消息流，不绑定策略/目标。
+
+        两阶段流程（解决 MU ↔ CM 循环依赖）：
+        Phase 1: log_message — 轻量记录到 messages_log（关键词话题）
+        Phase 2: MU — 从 messages_log 读取完整上下文做序列分析
+        Phase 3: process_boundary — 使用 LLM 话题做边界检测
+        """
         if not messages:
             return {"conversation": None, "had_closed": False, "closed_conv": None}
 
@@ -280,24 +293,34 @@ class PipelineService:
         if not her_msgs:
             her_msgs = [messages[-1]]
 
-        mu = MessageUnderstanding()
-        combined = " ".join(m["content"] for m in her_msgs[-3:])
-        llm_result = await self.llm.chat(
-            mu.system_prompt,
-            mu.build_user_prompt([{"role": "她", "content": combined}])
-        )
-        ms = mu.parse_to_state(llm_result)
-
         conv_mgr = await self._get_conversation_manager()
-        had_closed = False
-        closed_conv_dict = None
 
+        # Phase 1: 轻量记录所有消息（不做边界检测）
         for msg in messages:
             role = msg.get("role", "她")
             content = msg.get("content", "")
             ts = msg.get("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"))
-            _, _, has_closed = conv_mgr.observe_message(
-                message_content=content, timestamp=ts, role=role,
+            conv_mgr.log_message(content, ts, role)
+
+        # Phase 2: MU 从 messages_log 读取完整上下文
+        active = conv_mgr.get_active_conversation()
+        msg_log = active.messages_log if active else []
+        mu = MessageUnderstanding()
+        recent = msg_log[-15:]
+        llm_result = await self.llm.chat(
+            mu.system_prompt,
+            mu.build_user_prompt_for_sequence(recent)
+        )
+        ms = mu.parse_to_state(llm_result)
+
+        # Phase 3: 使用 LLM 话题做边界检测
+        had_closed = False
+        closed_conv_dict = None
+        for msg in messages:
+            role = msg.get("role", "她")
+            ts = msg.get("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"))
+            _, _, has_closed = conv_mgr.process_boundary(
+                timestamp=ts,
                 topic_override=ms.topic if role == "她" else None,
             )
             if has_closed:
@@ -311,7 +334,7 @@ class PipelineService:
 
         evaluation = None
         if trigger_evaluator and her_msgs:
-            evaluation = await self._run_evaluator(rs, ms, her_msgs)
+            evaluation = await self._run_evaluator(rs, ms, her_msgs, conv_mgr.get_active_conversation())
 
         active = conv_mgr.get_active_conversation()
         return {
@@ -333,17 +356,25 @@ class PipelineService:
                 "goal": "", "goal_zh": "", "conversation_switched": False,
                 "closed_conversation": None, "debug": {},
             }
-        combined_msg = " ".join(m.get("content", "") for m in pending_messages)
-        history = chat_history or [
+        mu = MessageUnderstanding()
+        history = chat_history or []
+        pending_fmt = [
             {"role": m.get("role", "她"), "content": m.get("content", "")}
             for m in pending_messages
         ]
-        return await self.process_message(combined_msg, history)
+        all_msgs = (history + pending_fmt)[-15:]
+        llm_result = await self.llm.chat(
+            mu.system_prompt, mu.build_user_prompt_for_sequence(all_msgs)
+        )
+        ms = mu.parse_to_state(llm_result)
+
+        combined_msg = " ".join(m.get("content", "") for m in pending_messages)
+        return await self.process_message(combined_msg, history, ms_override=ms)
 
     async def _run_evaluator(
-        self, rs: dict, ms, her_msgs: list[dict]
+        self, rs: dict, ms, her_msgs: list[dict], active_conv=None
     ) -> dict | None:
-        """评估上一轮策略的效果。"""
+        """评估上一轮策略的效果。从 messages_log 提取上下文填充评估数据。"""
         from src.evaluator import StrategyEvaluator
         effectiveness = rs.get("strategy_effectiveness", {})
         if not effectiveness:
@@ -356,12 +387,29 @@ class PipelineService:
                 last_strategy = name
         if not last_strategy:
             return None
+
+        my_message = ""
+        her_messages_before: list[str] = []
+        if active_conv is not None:
+            msg_log = getattr(active_conv, "messages_log", []) or []
+            last_me_idx = -1
+            for i in range(len(msg_log) - 1, -1, -1):
+                if msg_log[i].get("role") == "我":
+                    last_me_idx = i
+                    break
+            if last_me_idx >= 0:
+                my_message = msg_log[last_me_idx].get("content", "")
+                her_messages_before = [
+                    m.get("content", "") for m in msg_log[:last_me_idx]
+                    if m.get("role") == "她"
+                ]
+
         evaluator = StrategyEvaluator()
         result = evaluator.evaluate(
             last_strategy=last_strategy,
-            her_messages_before=[],
+            her_messages_before=her_messages_before,
             her_messages_after=[m.get("content", "") for m in her_msgs],
-            my_message="",
+            my_message=my_message,
             emotion_before="neutral",
             emotion_after=ms.emotion,
         )

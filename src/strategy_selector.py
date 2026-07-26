@@ -209,10 +209,11 @@ class StrategySelector:
     ) -> tuple[float, list[str]]:
         """计算策略卡的匹配分数。
 
-        三维度 + 动态风险惩罚：
-        - need_match:    主分，策略 target_need 与当前 top_needs 的重叠度
-        - context_match: 当前情绪/上下文是否匹配策略偏好
-        - risk_penalty:  风险惩罚 × 信任衰减（高信任→惩罚衰减，低信任→惩罚放大）
+        四维度 + 动态调整：
+        - need_match:             主分，策略 target_need 与当前 top_needs 的重叠度
+        - context_match:          当前情绪/上下文是否匹配策略偏好
+        - risk_penalty:           风险惩罚 × 信任衰减
+        - effectiveness_adjust:   历史成功率加权（≥5 次使用后生效）
         """
         reasons: list[str] = []
 
@@ -229,7 +230,11 @@ class StrategySelector:
         if risk_pen > 0:
             reasons.append(f"risk={card.risk_level} base={base_pen:.2f} × trust_decay({trust}) → -{risk_pen:.2f}")
 
-        total = need_score + context_score - risk_pen
+        eff_adj, eff_reason = self._effectiveness_adjustment(card)
+        if eff_reason:
+            reasons.append(eff_reason)
+
+        total = need_score + context_score - risk_pen + eff_adj
         return max(0.0, total), reasons
 
     # ---- 子维度 ----
@@ -276,3 +281,51 @@ class StrategySelector:
                 return 0.05, f"context: emotion={self._ms_emotion} ({tag}) matched → +0.05"
 
         return 0.0, ""
+
+    # ---- 历史效果加权 ----
+
+    _MIN_SAMPLES = 5       # 最少使用次数才纳入加权
+    _MAX_ADJUST = 0.15     # 最大调整幅度
+
+    def _effectiveness_adjustment(self, card: StrategyCard) -> tuple[float, str]:
+        """基于历史 strategy_effectiveness 数据的分数调整。
+
+        在 card.name 或 card.id 匹配到 effectiveness 条目且使用次数 ≥ _MIN_SAMPLES 时，
+        根据成功率偏离均值的幅度调整分数。
+        """
+        effectiveness = self.rs.get("strategy_effectiveness", {})
+        if not effectiveness:
+            return 0.0, ""
+
+        entry = effectiveness.get(card.name) or effectiveness.get(card.id)
+        if not entry:
+            return 0.0, ""
+
+        uses = entry.get("total_uses", 0)
+        if uses < self._MIN_SAMPLES:
+            return 0.0, ""
+
+        rate = entry.get("success_rate", 0.0)
+        if rate is None:
+            return 0.0, ""
+
+        # 计算所有达标策略的平均成功率
+        rates = []
+        for v in effectiveness.values():
+            if isinstance(v, dict) and v.get("total_uses", 0) >= self._MIN_SAMPLES:
+                r = v.get("success_rate")
+                if r is not None:
+                    rates.append(r)
+
+        if len(rates) < 2:
+            return 0.0, ""
+
+        avg_rate = sum(rates) / len(rates)
+        delta = rate - avg_rate
+
+        if abs(delta) < 0.05:
+            return 0.0, ""
+
+        adj = round(max(-self._MAX_ADJUST, min(self._MAX_ADJUST, delta * 0.3)), 3)
+        direction = "↑" if adj > 0 else "↓"
+        return adj, f"effectiveness: rate={rate:.2f} vs avg={avg_rate:.2f} → {direction}{abs(adj):.2f}"

@@ -10,6 +10,15 @@ STRATEGIES_DIR = ROOT_DIR / "strategies"
 BASE_URL = "https://opencode.ai/zen/go/v1/chat/completions"
 MODEL = "deepseek-v4-flash"
 
+# PostgreSQL
+DB_HOST = "localhost"
+DB_PORT = 5432
+DB_USER = "postgres"
+DB_PASSWORD = "devpass"
+DB_NAME = "devilchat"
+DB_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DB_SYNC_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
 import sys
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))

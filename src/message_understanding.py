@@ -60,6 +60,7 @@ EXPECTED_RESPONSE_VALUES = [
     "support", "advice", "humor", "affection",
 ]
 TOPIC_VALUES = ["work", "exam", "family", "relationship", "dating", "conflict", "daily"]
+BURST_PATTERN_VALUES = ["single", "venting", "escalating", "question_chain", "mixed"]
 
 # surface_intent 和 need 已改为打分模式，不在此校验
 _FIELD_ENUMS: dict[str, frozenset] = {
@@ -71,6 +72,8 @@ _FIELD_ENUMS: dict[str, frozenset] = {
     "conflict_signal": frozenset(CONFLICT_SIGNAL_VALUES),
     "conversation_stage": frozenset(CONVERSATION_STAGE_VALUES),
     "expected_response": frozenset(EXPECTED_RESPONSE_VALUES),
+    "burst_pattern": frozenset(BURST_PATTERN_VALUES),
+    "emotional_peak": frozenset(EMOTION_VALUES),
 }
 
 _REQUIRED_FIELDS = [
@@ -109,6 +112,9 @@ class MessageState:
     conversation_stage: str
     expected_response: str
     topic: str = "daily"
+    burst_pattern: str = "single"
+    emotional_peak: str = "neutral"
+    trajectory_note: str = ""
     relationship_context: dict = field(default_factory=dict)
 
     @classmethod
@@ -177,43 +183,57 @@ class MessageState:
 # ============================================================
 
 def _build_system_prompt() -> str:
-    """构建消息理解的系统提示词。包含完整的字段定义和输出格式。"""
+    """构建消息理解的系统提示词。支持单条消息和批量消息序列分析。"""
 
     intent_items = "\n".join(f'        "{v}": 0.0,' for v in SURFACE_INTENT_VALUES)
     need_items = "\n".join(f'        "{v}": 0.0,' for v in NEED_VALUES)
 
     return f"""你是一个恋爱沟通分析专家，专门分析女性在聊天中发送的消息。
 
-你的任务：接收她的最新消息和对话上下文，输出结构化的消息分析结果。
+你的任务：接收她的一段消息序列（可能 1~5 条连发，标记为"她"的消息），以及你（标记为"我"）的回复作为上下文，分析整体的情绪基调、情绪递进轨迹、核心需求，输出结构化的分析结果。
 
 ## 分析原则
 
-1. 结合关系上下文解读消息——同一个词在不同关系中含义完全不同
-2. 优先识别需求而非情绪——情绪是表象，需求才是驱动力
-3. 关注关系信号——她可能是外表说A、实际在表达B
-4. 只做分析，不做建议——不要生成回复，只输出分析结果
+1. **主导情绪取最后一条"她"的消息的情绪**。
+   例外：如果多条消息构成"倾诉递进"（如：累 → 越来越累 → 扛不住了），取峰值情绪作为主导情绪。
+
+2. **need_scores 要覆盖整个递进过程**的综合需求，不只是最后一条消息的需求。
+
+3. 如果多条消息是"话题跳跃"（如：累 → 问你今天干嘛了），按最后一条确定主导方向和话题。
+
+4. 如果只有一条"她"的消息，正常分析即可。
+
+5. **请重点分析标记为"她"的消息**，"我"的消息仅作上下文参考——你的回复会影响她后续消息的情绪走向。
+
+6. 结合关系上下文解读消息——同一个词在不同关系中含义完全不同。
+
+7. 优先识别需求而非情绪——情绪是表象，需求才是驱动力。
+
+8. 关注关系信号——她可能是外表说A、实际在表达B。
+
+9. 只做分析，不做建议——不要生成回复，只输出分析结果。
 
 ## 输出字段
 
 ### surface_intent_scores (object)
-对每种可能的表面意图打分（0.0~1.0），允许同时有多个高分。
-一条消息可以同时"抱怨""情绪表达""分享"——这些不互斥。
+对整个消息序列中她表达的表面意图打分（0.0~1.0），以最新消息为主。
+允许同时有多个高分——一条消息可以同时"抱怨""情绪表达""分享"。
 
 {_format_scored_keys(SURFACE_INTENT_VALUES)}
 
 ### need_scores (object)
-对每种可能的回应需求打分（0.0~1.0），允许多个需求并存。
-一条消息可能既想被共情又想被陪伴——不互斥。
+对每种可能的回应需求打分（0.0~1.0），覆盖整个递进过程。
 判断方法：不是分析"她有什么心理需求"，而是问自己"她现在最想让我做什么"。
 
 {_format_need_keys()}
 
 ### emotion (string)
-她的情绪。可选值：
+她整个序列的主导情绪。规则：取最新一条"她"消息的情绪，venting 时取峰值。
+可选值：
 {_format_enum_list(EMOTION_VALUES)}
 
 ### emotion_intensity (number, 0.0~1.0)
-情绪强度。0.0=无波动，1.0=极端情绪
+主导情绪的强度。0.0=无波动，1.0=极端情绪。取最新"她"消息的强度，venting 时取峰值。
 
 ### relationship_signal (string)
 她向关系释放的隐含信号。可选值：
@@ -238,7 +258,7 @@ def _build_system_prompt() -> str:
 可选值：{_format_enum_list(CONFLICT_SIGNAL_VALUES)}
 
 ### conversation_stage (string)
-当前消息在整段对话中的位置。请结合对话历史判断。
+当前消息序列在整段对话中的位置。请结合对话历史判断。
 可选值：{_format_enum_list(CONVERSATION_STAGE_VALUES)}
 
 ### expected_response (string)
@@ -246,7 +266,7 @@ def _build_system_prompt() -> str:
 可选值：{_format_enum_list(EXPECTED_RESPONSE_VALUES)}
 
 ### topic (string)
-她正在聊的话题。根据消息的核心内容判断，而非单个词汇。
+她正在聊的话题。根据消息序列的核心内容判断，而非单个词汇。
 可选值：{_format_enum_list(TOPIC_VALUES)}
 
 分类依据：
@@ -258,11 +278,21 @@ def _build_system_prompt() -> str:
 - conflict: 冲突/争吵/不满/指责对方（即使话题涉及关系，如果核心是表达不满，归 conflict）
 - daily: 日常闲聊（无法归入以上类别时使用）
 
-例如：
-- "你从来都不主动" → conflict（不是在聊关系，而是在表达不满）
-- "你会等我吗" → relationship
-- "这周末想去看电影" → dating
-- "今天复习得好累" → exam
+### burst_pattern (string) — 展示用，不参与策略决策
+消息序列的结构模式。可选值：
+- single: 单条消息，无 burst
+- venting: 倾诉递进，情绪逐步加强（后一条加深前一条的情绪）
+- escalating: 情绪升级，可能转向冲突（情绪从负面到更负面）
+- question_chain: 连续提问，每条都在寻求信息
+- mixed: 混合型，话题/情绪跳跃，无明显递进关系
+
+### emotional_peak (string) — 展示用，不参与策略决策
+整个序列中情绪最强烈的那条消息对应的情绪标签。可选值同 emotion 字段。
+
+### trajectory_note (string) — 展示用，不参与策略决策
+一句话概括整个 burst 的情绪/需求递进轨迹。
+例如："从疲惫倾诉到寻求安慰"、"从不满到失望"、"从分享到邀约"。
+单条消息时为空字符串。
 
 ## 输出格式
 
@@ -270,7 +300,7 @@ def _build_system_prompt() -> str:
 
 ```json
 {{
-  "message": "原始消息文本",
+  "message": "序列中最后一条她的消息文本",
   "surface_intent_scores": {{
 {intent_items}
   }},
@@ -287,7 +317,10 @@ def _build_system_prompt() -> str:
   "conflict_signal": "...",
   "conversation_stage": "...",
   "expected_response": "...",
-  "topic": "daily"
+  "topic": "daily",
+  "burst_pattern": "single",
+  "emotional_peak": "neutral",
+  "trajectory_note": ""
 }}
 ```"""
 
@@ -431,6 +464,46 @@ class MessageUnderstanding:
 
         return "\n".join(context_parts)
 
+    def build_user_prompt_for_sequence(
+        self, messages: list[dict], my_last_message: Optional[str] = None
+    ) -> str:
+        """构建批量消息序列的 user prompt。输入为最近 N 条混合消息（她+我）。
+
+        与 build_user_prompt 的区别：
+        - 消息格式化为带序号的序列，而非角色标签的对话历史
+        - 指示 LLM 分析整个序列，而非单条消息
+        """
+        context_parts = []
+
+        rs = self.relationship_state
+        context_parts.append("## 当前关系状态")
+        context_parts.append(f"- 关系阶段: {rs['stage']}")
+        context_parts.append(f"- 关系热度: {rs['temperature']}")
+        if rs.get("attachment_style"):
+            context_parts.append(f"- 对方依恋风格: {rs['attachment_style']}")
+        context_parts.append(f"- 信任程度: {rs['trust_level']}/100")
+        context_parts.append(f"- 亲密程度: {rs['intimacy_level']}/100")
+        context_parts.append(f"- 冲突状态: {rs['conflict_status']}")
+        if rs.get("recent_events"):
+            context_parts.append(f"- 近期事件: {', '.join(rs['recent_events'])}")
+
+        if my_last_message:
+            context_parts.append(f"\n## 我上一条发的消息\n{my_last_message}")
+
+        if messages:
+            context_parts.append(f"\n## 消息序列（时间顺序，共 {len(messages)} 条）\n")
+            for i, m in enumerate(messages):
+                role = "她" if m.get("role") == "她" else "我"
+                content = m.get("content", "")
+                context_parts.append(f"{i+1}. {role}: {content}")
+
+        context_parts.append(
+            '\n请分析她在以上序列中的消息（标记为"她"的条目），'
+            '考虑整个交换的上下文，仅输出 JSON。'
+        )
+
+        return "\n".join(context_parts)
+
     def parse_response(self, llm_output: str) -> dict:
         text = self._strip_markdown_fence(llm_output)
         result = json.loads(text)
@@ -466,6 +539,11 @@ class MessageUnderstanding:
         # topic 可选，默认 "daily"
         if "topic" not in result or result["topic"] not in TOPIC_VALUES:
             result["topic"] = "daily"
+
+        # 新增字段兜底：LLM 未返回时不崩溃
+        result.setdefault("burst_pattern", "single")
+        result.setdefault("emotional_peak", result.get("emotion", "neutral"))
+        result.setdefault("trajectory_note", "")
 
         result["relationship_context"] = dict(self.relationship_state)
         return result

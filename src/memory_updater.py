@@ -62,7 +62,8 @@ class MemoryUpdater:
 
         # ---- 规则 2：outcome = unresolved → 只写入 type="unresolved" 的 key_points ----
         if outcome == "unresolved" and key_points:
-            unresolved = set(self._rs.get("unresolved_topics", []))
+            unresolved: list[str] = list(self._rs.get("unresolved_topics", []))
+            seen = set(unresolved)
             for point in key_points:
                 if isinstance(point, dict):
                     text = point.get("text", "")
@@ -70,12 +71,13 @@ class MemoryUpdater:
                 else:
                     text = str(point)
                     ptype = ""
-                if text and text not in unresolved and ptype == "unresolved":
-                    unresolved.add(text)
+                if text and text not in seen and ptype == "unresolved":
+                    unresolved.append(text)
+                    seen.add(text)
                     changes.setdefault("unresolved_topics", []).append(text)
                     rules_applied.append(f"规则2: outcome=unresolved + type=unresolved → {text}")
             if changes.get("unresolved_topics"):
-                self._rs["unresolved_topics"] = sorted(unresolved)
+                self._rs["unresolved_topics"] = unresolved
             if not changes.get("unresolved_topics"):
                 rules_applied.append("规则2: outcome=unresolved 但无 type=unresolved 的 key_points，跳过")
 
@@ -99,16 +101,35 @@ class MemoryUpdater:
 
             # 同时清理 unresolved_topics 中已解决的项
             if key_points:
-                unresolved = set(self._rs.get("unresolved_topics", []))
+                unresolved = list(self._rs.get("unresolved_topics", []))
                 removed = []
                 for point in key_points:
                     if point in unresolved:
-                        unresolved.discard(point)
+                        unresolved.remove(point)
                         removed.append(point)
                 if removed:
-                    self._rs["unresolved_topics"] = sorted(unresolved)
+                    self._rs["unresolved_topics"] = unresolved
                     changes.setdefault("resolved_topics", []).extend(removed)
                     rules_applied.append(f"规则4副作用: 清理已解决的 unresolved_topics: {removed}")
+
+        # ---- 规则 5：非 daily 话题关闭 → 近期关键事件（上限 10 条，FIFO）----
+        if topic != "daily" and summary:
+            events: list[str] = list(self._rs.get("近期关键事件", []))
+            events.append(summary)
+            if len(events) > 10:
+                removed_old = events[:-10]
+                events = events[-10:]
+                rules_applied.append(f"规则5: 近期关键事件 超过 10 条，移除最旧 {len(removed_old)} 条")
+            self._rs["近期关键事件"] = events
+            changes.setdefault("recent_events_added", []).append(summary)
+            rules_applied.append(f"规则5: topic={topic} 关闭 → 近期关键事件 (+1, 当前 {len(events)} 条)")
+
+        # ---- FIFO 上限：unresolved_topics 最多 10 条 ----
+        unresolved = self._rs.get("unresolved_topics", [])
+        if len(unresolved) > 10:
+            removed = unresolved[:len(unresolved) - 10]
+            self._rs["unresolved_topics"] = unresolved[-10:]
+            rules_applied.append(f"unresolved_topics FIFO: {len(unresolved)} → 10, 移除 {len(removed)} 条旧条目")
 
         return {
             "applied_rules": rules_applied,
