@@ -36,31 +36,40 @@ MAX_STORED_CONVERSATIONS = 50
 
 TOPIC_KEYWORDS: dict[str, list[str]] = {
     "work": ["老板", "同事", "加班", "工作", "项目", "开会", "上班", "辞职", "绩效", "汇报",
-             "领导", "客户", "出差", "工资", "年终奖", "跳槽", "面试", "入职"],
+             "领导", "客户", "出差", "工资", "年终奖", "跳槽", "面试", "入职", "升职"],
     "exam": ["考试", "复习", "做题", "论文", "答辩", "开学", "成绩", "作业", "考研",
-             "备考", "模拟", "真题", "图书馆", "刷题"],
+             "备考", "模拟", "真题", "图书馆", "刷题", "模考", "上岸", "挂科", "错题"],
     "family": ["妈", "爸", "家里", "爸妈", "弟弟", "妹妹", "哥哥", "姐姐", "回家",
-               "亲戚", "我妈", "我爸", "奶奶", "爷爷"],
+               "亲戚", "我妈", "我爸", "父母", "家里人", "奶奶", "爷爷", "催婚", "相亲"],
     "relationship": ["我们", "感情", "在一起", "分手", "喜欢你", "想你", "爱你", "异地",
-                     "吃醋", "在乎", "关系", "未来", "结婚"],
+                     "吃醋", "在乎", "关系", "未来", "结婚", "等你", "以后", "会不会",
+                     "在一起吗", "我们以后", "等我", "不想异地"],
     "dating": ["约会", "看电影", "吃饭去", "周末", "出去玩", "旅游", "机票", "酒店",
-               "见面", "一起", "约吗", "逛街"],
-    "conflict": ["吵架", "生气", "你总是", "你从来不", "从来不听", "为什么你", "不想理你", "冷战",
-                 "烦死了", "走开", "别理我", "随便吧", "你爱怎样", "不理我", "敷衍"],
-    "daily": [],  # 兜底，不匹配其他时归入
+               "电影", "逛街", "一起吃", "这周末", "出去走走", "咖啡", "见面", "约吗"],
+    "conflict": ["吵架", "生气", "你总是", "你从来不", "为什么你", "不想理你", "冷战",
+                 "不主动", "不想理", "根本不", "从来不", "每次都是", "你都不", "不在乎",
+                 "烦死了", "走开", "别理我", "随便吧", "敷衍", "算了算了", "你是不是不想",
+                 "你根本不在乎", "你从来不想", "你一点都不", "你从不"],
+    "daily": [],
     "other": [],
 }
 
+VALID_TOPICS = {"work", "exam", "family", "relationship", "dating", "conflict", "daily"}
 
-def detect_topic(message_content: str) -> str:
-    """根据关键词匹配话题。不调 LLM，纯规则。
+
+def detect_topic(message_content: str, llm_topic: str | None = None) -> str:
+    """话题检测：优先使用 LLM 结果，回退到关键词匹配。
 
     Args:
         message_content: 用户（她）的消息文本
+        llm_topic: LLM 给出的话题标签，None 或无效值时回退关键词
 
     Returns:
-        topic 标签（work/exam/family/relationship/dating/conflict/daily/other）
+        topic 标签（work/exam/family/relationship/dating/conflict/daily）
     """
+    if llm_topic and llm_topic in VALID_TOPICS:
+        return llm_topic
+
     content = message_content.lower()
     scores: dict[str, int] = {}
     for topic, keywords in TOPIC_KEYWORDS.items():
@@ -78,9 +87,28 @@ def detect_topic(message_content: str) -> str:
 
 
 # ============================================================
-# 结束信号词表（Section 4.1）
+# 边界评分系统 — event-driven boundary detection
 # ============================================================
 
+# 边界分数阈值
+BOUNDARY_THRESHOLD = 1.0        # 累计 ≥ 此值 → close_and_new
+TOPIC_SWITCH_SCORE = 0.5        # 话题切换
+GAP_OVER_30MIN_SCORE = 0.5      # 间隔 > 30min
+# 自动关闭条件（不依赖累计分数）
+AUTO_CLOSE_GAP_SEC = 8 * 60 * 60     # > 8h → 直接关闭
+
+# 跨天例外：深夜 23:00 ~ 01:00，间隔 ≤ 1 小时不算跨天
+NIGHT_START_HOUR = 23
+NIGHT_END_HOUR = 1
+NIGHT_MAX_GAP_SEC = 60 * 60  # 1 小时
+
+# 超时兜底：各 topic 的最大无消息间隔（秒）
+TIMEOUT_BY_TOPIC: dict[str, int] = {
+    "dating": 6 * 60 * 60,
+    "daily": 12 * 60 * 60,
+}
+
+# 结束信号词表（闭口检测）
 CLOSURE_SIGNALS = [
     "晚安", "睡了", "睡觉", "睡吧", "先睡了",
     "拜拜", "明天聊", "先这样吧", "好了我去忙了",
@@ -94,33 +122,6 @@ def detect_closure(message_content: str) -> bool:
     """检测是否包含明确的结束信号。"""
     content = message_content.strip().lower()
     return any(signal in content for signal in CLOSURE_SIGNALS)
-
-
-# ============================================================
-# 时间阈值（Section 4.2 + Section 5）
-# ============================================================
-
-# 边界判断用的时间间隔（秒）
-SAME_CONVERSATION_SEC = 30 * 60           # 30 分钟：同一 Conversation
-MAYBE_NEW_SEC = 2 * 60 * 60                # 30min ~ 2h：不确定
-DEFINITELY_NEW_SEC = 8 * 60 * 60           # 2h ~ 8h：很可能新
-
-# 超时兜底（秒）
-TIMEOUT_BY_TOPIC: dict[str, int] = {
-    "daily": 6 * 60 * 60,        # 6 小时
-    "work": 12 * 60 * 60,        # 12 小时
-    "exam": 12 * 60 * 60,        # 12 小时
-    "family": 12 * 60 * 60,      # 12 小时
-    "relationship": 24 * 60 * 60,  # 24 小时
-    "dating": 24 * 60 * 60,     # 24 小时
-    "conflict": 72 * 60 * 60,    # 72 小时
-    "other": 12 * 60 * 60,       # 12 小时
-}
-
-# 跨天例外：深夜 23:00 ~ 01:00，间隔 ≤ 1 小时不算跨天
-NIGHT_START_HOUR = 23
-NIGHT_END_HOUR = 1
-NIGHT_MAX_GAP_SEC = 60 * 60  # 1 小时
 
 
 # ============================================================
@@ -184,6 +185,7 @@ class ConversationManager:
         message_content: str,
         timestamp: str,
         current_goal: str | None = None,
+        topic_override: str | None = None,
     ) -> tuple[Conversation, bool]:
         """处理一条新消息，返回 (当前 Conversation, 是否发生切换)。
 
@@ -197,7 +199,7 @@ class ConversationManager:
         7. 如需新建 → 创建新 Conversation
         8. 更新 current_goal
         """
-        topic = detect_topic(message_content)
+        topic = detect_topic(message_content, llm_topic=topic_override)
         closure_detected = detect_closure(message_content)
         switched = False
 
@@ -264,46 +266,42 @@ class ConversationManager:
         closure_detected: bool,
         timestamp: str,
     ) -> str:
-        """优先级裁决器。返回: close_and_new | continue | pending_close | confirm_close"""
+        """边界评分裁决器。事件驱动：结束信号 > 自动关闭 > 累计评分。
+
+        返回: close_and_new | continue | pending_close | confirm_close
+        """
         assert self._active is not None
 
-        # ---- 信号 A：结束信号（最高优先级）----
+        # ---- 信号 A：结束信号（最高优先级，不受评分影响）----
         if closure_detected:
-            # 如果上轮已经是 pending_close → 确认关闭
             if self._active._pending_close:
                 return "confirm_close"
-            # 否则标记 pending_close，等待下轮确认
             return "pending_close"
 
-        # 本轮回合清掉 pending_close 标记（用户说了新内容）
+        # 本轮回合清掉 pending_close 标记
         if self._active._pending_close:
             self._active._pending_close = False
 
-        # ---- 信号 B：时间间隔 ----
+        # ---- 信号 B：自动关闭条件 ----
         gap_sec = self._time_gap(timestamp)
-        topic_switch = (topic != self._active.topic)
-
-        # 跨天判断
         cross_day = self._is_cross_day(timestamp)
 
-        # 规则 2：时间间隔 > 8h 或跨天 → 直接关闭
-        if gap_sec > DEFINITELY_NEW_SEC or (cross_day and gap_sec > NIGHT_MAX_GAP_SEC):
+        # > 8h 或跨天 → 直接关闭
+        if gap_sec > AUTO_CLOSE_GAP_SEC or (cross_day and gap_sec > NIGHT_MAX_GAP_SEC):
             return "close_and_new"
 
-        # 规则 3：30min ~ 2h 且话题切换 → 关闭
-        if SAME_CONVERSATION_SEC < gap_sec <= MAYBE_NEW_SEC and topic_switch:
+        # ---- 信号 C：累计评分 ----
+        topic_switch = (topic != self._active.topic)
+        score = 0.0
+
+        if topic_switch:
+            score += TOPIC_SWITCH_SCORE
+        if gap_sec > 30 * 60:
+            score += GAP_OVER_30MIN_SCORE
+
+        if score >= BOUNDARY_THRESHOLD:
             return "close_and_new"
 
-        # 规则 4：30min ~ 2h 且话题不变 → 继续
-        if SAME_CONVERSATION_SEC < gap_sec <= MAYBE_NEW_SEC and not topic_switch:
-            return "continue"
-
-        # 规则 5：< 30min 且话题切换 → 保持 active（可能是插一句）
-        # 注：MVP 不做"连续 3 条新话题"追踪，简化为直接继续
-        if gap_sec <= SAME_CONVERSATION_SEC and topic_switch:
-            return "continue"
-
-        # 规则 6：< 30min 且话题不变 → 继续
         return "continue"
 
     def _check_timeout(self, timestamp: str) -> str | None:

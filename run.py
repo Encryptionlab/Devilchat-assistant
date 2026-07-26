@@ -188,7 +188,8 @@ def run_interactive():
         # ---- Conversation 引擎 ----
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         prev_conv = conv_mgr.get_active_conversation()
-        conv, switched = conv_mgr.process_message(her_msg, timestamp, goal_result["goal"])
+        conv, switched = conv_mgr.process_message(her_msg, timestamp, goal_result["goal"],
+                                                   topic_override=ms.topic)
 
         # ---- Conversation 关闭钩子 ----
         if switched and prev_conv is not None:

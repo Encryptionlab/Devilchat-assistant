@@ -60,16 +60,24 @@ class MemoryUpdater:
         # 由调用方通过计数器传入或从 conversations.json 读取。
         # 当前实现：提供一个独立的 apply_recurring_topics 方法
 
-        # ---- 规则 2：outcome = unresolved → key_points 写入 unresolved_topics ----
+        # ---- 规则 2：outcome = unresolved → 只写入 type="unresolved" 的 key_points ----
         if outcome == "unresolved" and key_points:
-            rules_applied.append("规则2: outcome=unresolved → unresolved_topics")
             unresolved = set(self._rs.get("unresolved_topics", []))
             for point in key_points:
-                if point and point not in unresolved:
-                    unresolved.add(point)
-                    changes.setdefault("unresolved_topics", []).append(point)
+                if isinstance(point, dict):
+                    text = point.get("text", "")
+                    ptype = point.get("type", "")
+                else:
+                    text = str(point)
+                    ptype = ""
+                if text and text not in unresolved and ptype == "unresolved":
+                    unresolved.add(text)
+                    changes.setdefault("unresolved_topics", []).append(text)
+                    rules_applied.append(f"规则2: outcome=unresolved + type=unresolved → {text}")
             if changes.get("unresolved_topics"):
                 self._rs["unresolved_topics"] = sorted(unresolved)
+            if not changes.get("unresolved_topics"):
+                rules_applied.append("规则2: outcome=unresolved 但无 type=unresolved 的 key_points，跳过")
 
         # ---- 规则 3：conflict topic + unresolved → 冲突等级上调 ----
         if topic == "conflict" and outcome == "unresolved":

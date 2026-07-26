@@ -59,6 +59,7 @@ EXPECTED_RESPONSE_VALUES = [
     "empathy", "reassurance", "celebration", "curiosity",
     "support", "advice", "humor", "affection",
 ]
+TOPIC_VALUES = ["work", "exam", "family", "relationship", "dating", "conflict", "daily"]
 
 # surface_intent 和 need 已改为打分模式，不在此校验
 _FIELD_ENUMS: dict[str, frozenset] = {
@@ -107,6 +108,7 @@ class MessageState:
     conflict_signal: str
     conversation_stage: str
     expected_response: str
+    topic: str = "daily"
     relationship_context: dict = field(default_factory=dict)
 
     @classmethod
@@ -243,6 +245,25 @@ def _build_system_prompt() -> str:
 她期待什么类型的回应。
 可选值：{_format_enum_list(EXPECTED_RESPONSE_VALUES)}
 
+### topic (string)
+她正在聊的话题。根据消息的核心内容判断，而非单个词汇。
+可选值：{_format_enum_list(TOPIC_VALUES)}
+
+分类依据：
+- work: 工作/职业/职场
+- exam: 考试/学习/备考
+- family: 家庭/家人
+- relationship: 恋爱关系本身（感情、未来、异地、对方的态度等）
+- dating: 约会/出行/娱乐安排
+- conflict: 冲突/争吵/不满/指责对方（即使话题涉及关系，如果核心是表达不满，归 conflict）
+- daily: 日常闲聊（无法归入以上类别时使用）
+
+例如：
+- "你从来都不主动" → conflict（不是在聊关系，而是在表达不满）
+- "你会等我吗" → relationship
+- "这周末想去看电影" → dating
+- "今天复习得好累" → exam
+
 ## 输出格式
 
 仅输出一个 JSON 对象，不要包含任何其他文字：
@@ -265,7 +286,8 @@ def _build_system_prompt() -> str:
   "has_metaphor": false,
   "conflict_signal": "...",
   "conversation_stage": "...",
-  "expected_response": "..."
+  "expected_response": "...",
+  "topic": "daily"
 }}
 ```"""
 
@@ -440,6 +462,10 @@ class MessageUnderstanding:
                     f"字段 '{field}' 的值 '{value}' 不在合法枚举中。"
                     f"合法值: {sorted(allowed)}"
                 )
+
+        # topic 可选，默认 "daily"
+        if "topic" not in result or result["topic"] not in TOPIC_VALUES:
+            result["topic"] = "daily"
 
         result["relationship_context"] = dict(self.relationship_state)
         return result
