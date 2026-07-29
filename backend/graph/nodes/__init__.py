@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from backend.graph.state import PipelineState
 from backend.config import RS_PATH
 
@@ -32,7 +32,18 @@ async def message_understanding_node(state: PipelineState) -> dict:
         user_prompt = mu.build_user_prompt(her_msgs)
 
     result_text = await llm.chat(mu.system_prompt, user_prompt)
-    ms = mu.parse_to_state(result_text)
+    try:
+        ms = mu.parse_to_state(result_text)
+    except (json.JSONDecodeError, KeyError, ValueError):
+        # Retry once with explicit format reminder
+        result_text = await llm.chat(
+            mu.system_prompt + "\n\nCRITICAL: Output ONLY valid JSON, no markdown fences, no extra text.",
+            user_prompt,
+        )
+        try:
+            ms = mu.parse_to_state(result_text)
+        except (json.JSONDecodeError, KeyError, ValueError):
+            return _fallback_mu_state(messages, mode)
 
     return {
         "emotion": ms.emotion,
@@ -239,70 +250,121 @@ async def dedup_and_persist_node(state: PipelineState) -> dict:
 
 
 async def _persist_conversation(contact_id: str, conv: dict) -> None:
-    from backend.db import get_pool
+    from backend.db import _get_conn
+    import uuid as _uuid
 
     def _parse_ts(val):
         if val is None:
-            return datetime.now(timezone.utc)
+            return datetime.now(timezone.utc).isoformat()
         if isinstance(val, datetime):
-            return val
+            return val.isoformat()
         try:
-            return datetime.fromisoformat(str(val))
+            return datetime.fromisoformat(str(val)).isoformat()
         except (ValueError, TypeError):
-            return datetime.now(timezone.utc)
+            return datetime.now(timezone.utc).isoformat()
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        conv_id = await conn.fetchval(
-            """INSERT INTO conversations (contact_id, topic, status, goal, start_time, end_time, summary, outcome, key_points)
-               VALUES ($1, $2, 'closed', $3, $4, $5, $6, $7, $8)
-               RETURNING id""",
-            contact_id, conv.get("topic", "daily"),
-            conv.get("current_goal", ""),
-            _parse_ts(conv.get("start_time")),
-            _parse_ts(conv.get("end_time")),
-            conv.get("summary", ""),
-            conv.get("outcome", "neutral"),
-            json.dumps(conv.get("key_points", []), ensure_ascii=False),
+    conn = await _get_conn()
+    conv_id = str(_uuid.uuid4())
+    await conn.execute(
+        """INSERT INTO conversations (id, contact_id, topic, status, goal, start_time, end_time, summary, outcome, key_points)
+           VALUES (?, ?, ?, 'closed', ?, ?, ?, ?, ?, ?)""",
+        (conv_id, contact_id, conv.get("topic", "daily"),
+         conv.get("current_goal", ""),
+         _parse_ts(conv.get("start_time")),
+         _parse_ts(conv.get("end_time")),
+         conv.get("summary", ""),
+         conv.get("outcome", "neutral"),
+         json.dumps(conv.get("key_points", []), ensure_ascii=False)),
+    )
+    for msg in conv.get("messages_log", []):
+        await conn.execute(
+            """INSERT INTO messages (id, conversation_id, contact_id, role, content, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (str(_uuid.uuid4()), conv_id, contact_id,
+             msg.get("role", "她"), msg.get("content", ""),
+             _parse_ts(msg.get("timestamp"))),
         )
-        for msg in conv.get("messages_log", []):
-            await conn.execute(
-                """INSERT INTO messages (conversation_id, contact_id, role, content, timestamp)
-                   VALUES ($1, $2, $3, $4, $5)""",
-                conv_id, contact_id,
-                msg.get("role", "她"), msg.get("content", ""),
-                _parse_ts(msg.get("timestamp")),
-            )
+    await conn.commit()
 
 
 async def _persist_memories(contact_id: str, memories: list[dict]) -> None:
-    from backend.db import get_pool
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        for mem in memories:
-            content = mem.get("content", "")
-            mem_type = mem.get("memory_type", "shared_event")
-            confidence = mem.get("confidence", 0.5)
+    from backend.db import _get_conn
+    from backend.memory.dedup import find_duplicates
+    import uuid as _uuid
 
-            # Dedup: check existing similar memories
-            existing = await conn.fetchrow(
-                """SELECT id FROM memories WHERE contact_id = $1 AND memory_type = $2
-                   AND content = $3 LIMIT 1""",
-                contact_id, mem_type, content,
+    _TTL_DAYS = {
+        "emotional_moment": 30, "key_event": 60, "shared_event": 365,
+        "unresolved_issue": 90, "preference": 180, "user_fact": 365,
+        "recurring_topic": 90,
+    }
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = await _get_conn()
+
+    for mem in memories:
+        content = mem.get("content", "")
+        mem_type = mem.get("memory_type", "shared_event")
+        confidence = mem.get("confidence", 0.5)
+
+        # Semantic dedup for stable types (preference / user_fact — slight wording
+        # variations should merge into one record instead of creating duplicates).
+        if mem_type in ("preference", "user_fact"):
+            dupes = await find_duplicates(content, contact_id, threshold=0.15)
+            compatible = [d for d in dupes
+                          if d.get("memory_type") in ("preference", "user_fact")]
+            if compatible:
+                await conn.execute(
+                    """UPDATE memories_sql SET recall_count = recall_count + 1,
+                       last_recalled_at = ?, confidence = MAX(confidence, ?)
+                       WHERE id = ?""",
+                    (now, confidence, compatible[0]["id"]),
+                )
+                continue
+        else:
+            # Exact match for event/emotion/issue types
+            cursor = await conn.execute(
+                """SELECT id FROM memories_sql WHERE contact_id = ? AND memory_type = ?
+                   AND content = ? LIMIT 1""",
+                (contact_id, mem_type, content),
             )
+            existing = await cursor.fetchone()
             if existing:
                 await conn.execute(
-                    "UPDATE memories SET recall_count = recall_count + 1, last_recalled_at = now() WHERE id = $1",
-                    existing["id"],
+                    """UPDATE memories_sql SET recall_count = recall_count + 1,
+                       last_recalled_at = ? WHERE id = ?""",
+                    (now, existing["id"]),
                 )
                 continue
 
-            await conn.execute(
-                """INSERT INTO memories (contact_id, memory_type, content, confidence, importance)
-                   VALUES ($1, $2, $3, $4, $5)""",
-                contact_id, mem_type, content, confidence,
-                3 if mem_type in ("emotional_moment", "unresolved_issue") else 1,
+        mem_id = str(_uuid.uuid4())
+        ttl_days = _TTL_DAYS.get(mem_type, 365)
+        expires = (datetime.now(timezone.utc) + timedelta(days=ttl_days)).isoformat()
+        importance = 3 if mem_type in ("emotional_moment", "unresolved_issue") else 1
+
+        await conn.execute(
+            """INSERT INTO memories_sql (id, contact_id, memory_type, content, confidence,
+               importance, created_at, last_recalled_at, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (mem_id, contact_id, mem_type, content, confidence,
+             importance, now, now, expires),
+        )
+        # Also write to ChromaDB for vector search
+        try:
+            from backend.db import get_chroma_collection
+            coll = await get_chroma_collection("memories")
+            coll.add(
+                ids=[mem_id],
+                documents=[content],
+                metadatas=[{
+                    "contact_id": contact_id,
+                    "memory_type": mem_type,
+                    "confidence": confidence,
+                    "importance": importance,
+                }],
             )
+        except Exception:
+            pass
+    await conn.commit()
 
 
 async def _update_relationship_from_conv(contact_id: str, conv: dict) -> None:
@@ -320,28 +382,134 @@ async def _update_relationship_from_conv(contact_id: str, conv: dict) -> None:
     result = mu.update(ConvWrapper())
     mu.save()
 
-    # Sync to PostgreSQL
-    from backend.db import get_pool
-    pool = await get_pool()
+    # Sync to SQLite
+    from backend.db import _get_conn
+    import uuid as _uuid
     rs = mu.state
-    async with pool.acquire() as conn:
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn = await _get_conn()
+    # Upsert: try update first, then insert if not found
+    cursor = await conn.execute(
+        "SELECT id FROM relationship_state WHERE contact_id = ?", (contact_id,)
+    )
+    existing = await cursor.fetchone()
+    if existing:
         await conn.execute(
-            """INSERT INTO relationship_state (contact_id, stage, trust_level, intimacy_level, conflict_level, warmth)
-               VALUES ($1, $2, $3, $4, $5, $6)
-               ON CONFLICT (contact_id) DO UPDATE SET
-                 stage = EXCLUDED.stage,
-                 trust_level = EXCLUDED.trust_level,
-                 intimacy_level = EXCLUDED.intimacy_level,
-                 conflict_level = EXCLUDED.conflict_level,
-                 warmth = EXCLUDED.warmth,
-                 updated_at = now()""",
-            contact_id,
-            rs.get("stage", "acquaintance"),
-            rs.get("trust_level", 50),
-            rs.get("intimacy_level", 30),
-            rs.get("conflict_level", 0),
-            rs.get("warmth", "neutral"),
+            """UPDATE relationship_state SET stage = ?, trust_level = ?, intimacy_level = ?,
+               conflict_level = ?, warmth = ?, updated_at = ?
+               WHERE contact_id = ?""",
+            (rs.get("stage", "acquaintance"), rs.get("trust_level", 50),
+             rs.get("intimacy_level", 30), rs.get("conflict_level", 0),
+             rs.get("warmth", "neutral"), now, contact_id),
         )
+    else:
+        await conn.execute(
+            """INSERT INTO relationship_state (id, contact_id, stage, trust_level, intimacy_level, conflict_level, warmth, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (str(_uuid.uuid4()), contact_id, rs.get("stage", "acquaintance"),
+             rs.get("trust_level", 50), rs.get("intimacy_level", 30),
+             rs.get("conflict_level", 0), rs.get("warmth", "neutral"), now),
+        )
+    await conn.commit()
+
+
+# ============================================================
+# Node 5c: Extract Typed Memories (LLM, frequency-gated)
+# ============================================================
+
+_EXTRACT_INTERVAL = 15  # messages between memory extraction calls
+
+_MEMORY_EXTRACT_PROMPT = """你是一个关系记忆提取器。从以下对话中提取结构化记忆。
+
+## 记忆类型
+- emotional_moment: 关键的情绪时刻（冲突、深情、脆弱）
+- preference: 她的喜好、厌恶、习惯
+- user_fact: 关于她的个人信息（工作、家庭、计划）
+- unresolved_issue: 未解决的问题或不满
+- recurring_topic: 反复出现的话题模式
+- key_event: 重要的生活事件
+
+## 输出格式
+{"memories": [{"memory_type": "...", "content": "一句话描述", "confidence": 0.0-1.0}]}
+
+## 规则
+- 只提取有明确证据的记忆，不要推测
+- content 用中文，简洁明确
+- confidence: 明确陈述=0.9+，暗示=0.5-0.7
+- 每条记忆独立，不要重复
+- 如果没有值得提取的记忆，返回 {"memories": []}
+
+仅输出 JSON。"""
+
+
+async def extract_memories_node(state: PipelineState) -> dict:
+    """Frequency-gated memory extraction. Runs every _EXTRACT_INTERVAL messages.
+
+    Extracts typed memories from recent messages, dedups, and persists
+    to both SQLite (memories_sql) and ChromaDB (memories collection).
+    """
+    from backend.services.llm_service import LlmService
+    from backend.config import load_api_key
+
+    contact_id = state.get("contact_id", "")
+    messages = state.get("messages", [])
+    new_count = len(messages)
+
+    # Frequency gate
+    current_count = state.get("_msg_count_since_extract", 0) + new_count
+    conversation_switched = state.get("conversation_switched", False)
+
+    if current_count < _EXTRACT_INTERVAL and not conversation_switched:
+        return {"_msg_count_since_extract": current_count}
+
+    # Run memory decay before extraction (maintenance, best-effort)
+    try:
+        from backend.memory.store import apply_decay as _apply_decay
+        await _apply_decay(contact_id)
+    except Exception:
+        pass
+
+    # Build conversation text from recent messages
+    her_msgs = [m for m in messages if m.get("role") == "她"]
+    my_msgs = [m for m in messages if m.get("role") != "她"]
+    lines = []
+    for m in messages[-40:]:
+        role = "她" if m.get("role") == "她" else "我"
+        lines.append(f"{role}: {m.get('content', '')}")
+    conversation_text = "\n".join(lines)
+
+    # Call LLM for memory extraction
+    llm = LlmService(api_key=load_api_key())
+    memories = []
+    try:
+        result_text = await llm.chat(_MEMORY_EXTRACT_PROMPT, conversation_text)
+        # LLM may wrap JSON in ``` fences or add trailing text
+        result_text = result_text.strip()
+        if result_text.startswith("```"):
+            result_text = result_text.split("```")[1]
+            if result_text.startswith("json"):
+                result_text = result_text[4:]
+            result_text = result_text.strip()
+        parsed = json.loads(result_text)
+        memories = parsed.get("memories", [])
+    except (json.JSONDecodeError, KeyError) as e:
+        # Log the raw output so we can debug format drift
+        import logging
+        logging.warning(f"extract_memories JSON parse error: {e}")
+        logging.warning(f"Raw LLM output (first 500 chars): {str(result_text)[:500]}")
+    except Exception as e:
+        import logging
+        logging.warning(f"extract_memories unexpected error: {type(e).__name__}: {e}")
+
+    # Persist new memories (dedup + dual-write)
+    if memories:
+        await _persist_memories(contact_id, memories)
+
+    return {
+        "_msg_count_since_extract": 0,  # reset counter
+        "_extracted_memories": memories,
+    }
 
 
 # ============================================================
@@ -379,20 +547,9 @@ async def retrieve_context_node(state: PipelineState) -> dict:
 
 
 async def _recall_memories(contact_id: str, topic: str, limit: int = 5) -> list[dict]:
-    from backend.db import get_pool
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """SELECT memory_type, content, confidence FROM memories
-               WHERE contact_id = $1
-               ORDER BY importance DESC, recall_count DESC, created_at DESC
-               LIMIT $2""",
-            contact_id, limit * 2,
-        )
-        return [
-            {"memory_type": r["memory_type"], "content": r["content"], "confidence": r["confidence"]}
-            for r in rows
-        ][:limit]
+    """Retrieve top memories filtered by time, sorted by importance > confidence > recall_count."""
+    from backend.memory.store import recall_memories
+    return await recall_memories(contact_id, days=30, limit=limit)
 
 
 # ============================================================
@@ -478,9 +635,17 @@ async def reply_generate_node(state: PipelineState) -> dict:
         conversation_stage=state.get("conversation_stage", "deepening"),
         expected_response="text",
         topic=state.get("topic", "daily"),
+        burst_pattern=state.get("burst_pattern", "single"),
     )
 
     goal_result = {"goal": state["goal"], "goal_zh": state.get("goal_zh", state["goal"])}
+
+    # Build burst analysis for the reply generator
+    burst_analysis = {
+        "pattern": state.get("burst_pattern", "single"),
+        "msg_count": len(her_msgs),
+        "her_msgs": her_msgs,
+    }
 
     reply_gen = ReplyGenerator(relationship_state=rs_raw)
     llm = LlmService(api_key=load_api_key())
@@ -488,6 +653,7 @@ async def reply_generate_node(state: PipelineState) -> dict:
         llm.as_callable(), ms, card, goal_result,
         chat_history=list(state["messages"]),
         conversation_context=state.get("llm_context", ""),
+        burst_analysis=burst_analysis,
     )
 
     return {"reply": result.get("reply", "")}
@@ -529,11 +695,28 @@ async def enhance_reply_node(state: PipelineState) -> dict:
         topic=state.get("topic", "daily"),
     )
 
+    reply = state.get("reply", "")
+    is_complex = len(her_msgs) >= 5
+    # Skip enhancer for long replies to complex inputs — the LLM tends to
+    # summarise instead of polish, destroying information density.
+    if is_complex and len(reply) >= 200:
+        return {"enhanced_reply": reply}
+
     enhancer = ExpressionEnhancer(relationship_state=rs_raw)
     llm = LlmService(api_key=load_api_key())
-    result = enhancer.enhance(llm.as_callable(), state.get("reply", ""), ms, card)
+    result = enhancer.enhance(
+        llm.as_callable(), reply, ms, card,
+        input_complexity={
+            "her_msg_count": len(her_msgs),
+            "burst_pattern": state.get("burst_pattern", "single"),
+        },
+    )
+    enhanced = result.get("enhanced_reply", reply)
+    # Safety net: if enhancer destroyed content, fall back to raw reply
+    if is_complex and len(enhanced) < len(reply) * 0.5:
+        enhanced = reply
 
-    return {"enhanced_reply": result.get("enhanced_reply", state.get("reply", ""))}
+    return {"enhanced_reply": enhanced}
 
 
 # ============================================================
@@ -560,17 +743,28 @@ async def persist_result_node(state: PipelineState) -> dict:
 
 
 async def _update_strategy_metrics(contact_id: str, strategy_name: str) -> None:
-    from backend.db import get_pool
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+    from backend.db import _get_conn
+    import uuid as _uuid
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn = await _get_conn()
+    cursor = await conn.execute(
+        "SELECT id, total_uses FROM strategy_metrics WHERE contact_id = ? AND strategy_name = ?",
+        (contact_id, strategy_name),
+    )
+    existing = await cursor.fetchone()
+    if existing:
         await conn.execute(
-            """INSERT INTO strategy_metrics (contact_id, strategy_name, total_uses, last_used)
-               VALUES ($1, $2, 1, now())
-               ON CONFLICT (contact_id, strategy_name) DO UPDATE SET
-                 total_uses = strategy_metrics.total_uses + 1,
-                 last_used = now()""",
-            contact_id, strategy_name,
+            "UPDATE strategy_metrics SET total_uses = total_uses + 1, last_used = ? WHERE id = ?",
+            (now, existing["id"]),
         )
+    else:
+        await conn.execute(
+            """INSERT INTO strategy_metrics (id, contact_id, strategy_name, total_uses, last_used)
+               VALUES (?, ?, ?, 1, ?)""",
+            (str(_uuid.uuid4()), contact_id, strategy_name, now),
+        )
+    await conn.commit()
 
 
 # ============================================================
@@ -582,6 +776,22 @@ def _load_rs_raw() -> dict:
         raw = json.loads(RS_PATH.read_text(encoding="utf-8"))
         return raw.get("relationship_state", raw)
     return {}
+
+
+def _fallback_mu_state(messages: list[dict], mode: str) -> dict:
+    """Fallback when LLM returns unparseable JSON — use simple heuristics."""
+    her_msgs = [m.get("content", "") for m in messages if m.get("role") == "她"]
+    last_msg = her_msgs[-1] if her_msgs else ""
+    return {
+        "emotion": "neutral",
+        "emotion_intensity": 0.3,
+        "dominant_intent": "sharing",
+        "topic": "daily",
+        "need_scores": {"ATTENTION": 0.5, "COMPANIONSHIP": 0.3},
+        "burst_pattern": "burst" if len(her_msgs) >= 3 else "single",
+        "trajectory_note": "",
+        "conversation_stage": "deepening",
+    }
 
 
 def _make_message_state(state: PipelineState):

@@ -3,9 +3,9 @@
 import json
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from backend.dependencies import get_llm_service, get_state_service
+from legacy.dependencies import get_llm_service, get_state_service
 from backend.services.llm_service import LlmService
-from backend.services.state_service import StateService
+from legacy.services.state_service import StateService
 
 from src.bootstrap import EXTRACTION_PROMPT, _strip_fence, _minimal_default, _stage_to_cn, _temperature_to_cn, _today
 

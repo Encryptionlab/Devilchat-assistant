@@ -1,8 +1,8 @@
 """GET /api/conversations and GET /api/conversations/{id}"""
 
 from fastapi import APIRouter, Depends
-from backend.dependencies import get_state_service
-from backend.services.state_service import StateService
+from legacy.dependencies import get_state_service
+from legacy.services.state_service import StateService
 
 router = APIRouter(prefix="/api", tags=["conversations"])
 

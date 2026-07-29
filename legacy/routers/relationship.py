@@ -1,9 +1,9 @@
 """GET /api/relationship and PUT /api/relationship"""
 
 from fastapi import APIRouter, Depends
-from backend.dependencies import get_state_service
-from backend.services.state_service import StateService
-from backend.schemas.relationship import RelationshipStateOut, RelationshipStateUpdate
+from legacy.dependencies import get_state_service
+from legacy.services.state_service import StateService
+from legacy.schemas.relationship import RelationshipStateOut, RelationshipStateUpdate
 
 router = APIRouter(prefix="/api", tags=["relationship"])
 

@@ -41,6 +41,7 @@ class ExpressionEnhancer:
         raw_reply: str,
         ms: MessageState,
         card: Optional[StrategyCard] = None,
+        input_complexity: Optional[dict] = None,
     ) -> dict:
         """润色回复表达。
 
@@ -49,17 +50,20 @@ class ExpressionEnhancer:
             raw_reply: 原始回复文本
             ms: 消息理解结果
             card: 使用的策略卡（可选，用于了解风险约束）
+            input_complexity: {"her_msg_count": int, "burst_pattern": str}
 
         Returns:
             {"enhanced_reply": str}
         """
-        system_prompt = self._build_system_prompt(card)
+        system_prompt = self._build_system_prompt(card, input_complexity)
         user_prompt = self._build_user_prompt(raw_reply, ms)
 
         enhanced = llm_call(system_prompt, user_prompt)
         return {"enhanced_reply": enhanced.strip()}
 
-    def _build_system_prompt(self, card: Optional[StrategyCard] = None) -> str:
+    def _build_system_prompt(
+        self, card: Optional[StrategyCard] = None, input_complexity: Optional[dict] = None
+    ) -> str:
         stage = self.rs.get("stage", "acquaintance")
         tone_guide = STAGE_TONE.get(stage, "自然、真诚")
 
@@ -75,13 +79,27 @@ class ExpressionEnhancer:
             f"语气要求：{tone_guide}",
             "",
             "## 具体做法",
-            "- 太长的句子拆短，太短的句子适当扩展",
+        ]
+
+        # Length preservation: don't compress replies to complex inputs
+        is_complex = (
+            input_complexity
+            and input_complexity.get("her_msg_count", 0) >= 5
+        )
+        if is_complex:
+            parts.append("- 对方发了多条消息，原始回复的信息密度必须保留，不要压缩或删减内容")
+            parts.append("- 可以用口语化表达替换书面语，但不能减少回应的话题数量")
+            parts.append("- 如果原始回复很长（超过150字），保持长度，不要拆短")
+        else:
+            parts.append("- 太短的句子适当扩展（加语气词或自然过渡）")
+
+        parts.extend([
             "- 过于书面化的词换成口语（如'确实如此'→'确实'）",
             "- 可以加适当的表情或语气词，但每句话不超过1个",
             "- 不要加[笑哭][捂脸]这类方括号表情（原始回复中已有的保留）",
             "- 不要改变人称和指代",
             "- 不要添加新的实质内容",
-        ]
+        ])
 
         if card and card.risk_level == "high":
             parts.append(f"- 注意：当前使用高风险策略（{card.name}），表达要留有退路，不能把话说死")

@@ -13,6 +13,7 @@ from backend.graph.nodes import (
     conversation_engine_node,
     summarize_and_extract_node,
     dedup_and_persist_node,
+    extract_memories_node,
     retrieve_context_node,
     strategy_select_node,
     reply_generate_node,
@@ -33,6 +34,7 @@ def build_graph() -> StateGraph:
     builder.add_node("conversation_engine", conversation_engine_node)
     builder.add_node("summarize_and_extract", summarize_and_extract_node)
     builder.add_node("dedup_and_persist", dedup_and_persist_node)
+    builder.add_node("extract_memories", extract_memories_node)
     builder.add_node("retrieve_context", retrieve_context_node)
     builder.add_node("strategy_select", strategy_select_node)
     builder.add_node("reply_generate", reply_generate_node)
@@ -51,20 +53,21 @@ def build_graph() -> StateGraph:
     def _should_summarize(state: PipelineState) -> str:
         if state.get("conversation_switched") and state.get("closed_conversation"):
             return "summarize_and_extract"
-        return "retrieve_context"
+        return "extract_memories"
 
     builder.add_conditional_edges(
         "conversation_engine",
         _should_summarize,
         {
             "summarize_and_extract": "summarize_and_extract",
-            "retrieve_context": "retrieve_context",
+            "extract_memories": "extract_memories",
         }
     )
 
-    # Summarize → dedup → context
+    # Summarize → dedup → extract memories → context
     builder.add_edge("summarize_and_extract", "dedup_and_persist")
-    builder.add_edge("dedup_and_persist", "retrieve_context")
+    builder.add_edge("dedup_and_persist", "extract_memories")
+    builder.add_edge("extract_memories", "retrieve_context")
 
     # Conditional: observe mode skips reply generation
     def _should_intervene(state: PipelineState) -> str:
@@ -84,20 +87,20 @@ def build_graph() -> StateGraph:
     )
 
     # Intervention path
-    builder.add_edge("strategy_select", "reply_generate")
-
-    # Conditional: if strategy_select set an error, skip to end
+    # strategy_select → reply_generate → enhance_reply → persist_result → END
+    # Error check: skip to END if strategy_select set an error
     def _after_strategy(state: PipelineState) -> str:
         if state.get("error"):
             return END
-        return "enhance_reply"
+        return "reply_generate"
 
     builder.add_conditional_edges(
         "strategy_select",
         _after_strategy,
-        {"enhance_reply": "enhance_reply", END: END},
+        {"reply_generate": "reply_generate", END: END},
     )
 
+    builder.add_edge("reply_generate", "enhance_reply")
     builder.add_edge("enhance_reply", "persist_result")
     builder.add_edge("persist_result", END)
 

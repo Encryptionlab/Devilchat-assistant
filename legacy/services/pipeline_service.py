@@ -17,7 +17,7 @@ from src.summarizer import summarize
 
 from backend.config import RS_PATH, CONV_PATH
 from backend.services.llm_service import LlmService
-from backend.services.state_service import StateService
+from legacy.services.state_service import StateService
 
 
 class PipelineService:

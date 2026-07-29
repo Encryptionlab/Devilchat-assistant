@@ -1,11 +1,11 @@
 """POST /api/observe + GET /api/dashboard"""
 
 from fastapi import APIRouter, Depends
-from backend.dependencies import get_llm_service, get_state_service
-from backend.schemas.chat import ChatRequest, ChatResponse
-from backend.services.pipeline_service import PipelineService
-from backend.services.message_buffer import MessageBuffer
-from backend.services.urgency_scorer import UrgencyScorer
+from legacy.dependencies import get_llm_service, get_state_service
+from legacy.schemas.chat import ChatRequest, ChatResponse
+from legacy.services.pipeline_service import PipelineService
+from legacy.services.message_buffer import MessageBuffer
+from legacy.services.urgency_scorer import UrgencyScorer
 
 router = APIRouter(prefix="/api", tags=["observe"])
 
@@ -29,7 +29,7 @@ def _get_scorer() -> UrgencyScorer:
 
 
 def _get_pipeline() -> PipelineService:
-    from backend.dependencies import get_llm_service, get_state_service
+    from legacy.dependencies import get_llm_service, get_state_service
     return PipelineService(get_llm_service(), get_state_service())
 
 

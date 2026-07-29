@@ -34,6 +34,7 @@ class ReplyGenerator:
         chat_history: Optional[list[dict]] = None,
         my_last_message: Optional[str] = None,
         conversation_context: Optional[str] = None,
+        burst_analysis: Optional[dict] = None,
     ) -> dict:
         """生成回复。
 
@@ -44,12 +45,13 @@ class ReplyGenerator:
             goal_result: GoalPlanner.plan() 的输出
             chat_history: 对话历史 [{"role": "她/我", "content": "..."}]
             my_last_message: 我上一条发的消息
+            burst_analysis: burst 分析 {"pattern": "burst|single|mixed", "msg_count": int, "her_msgs": [str]}
 
         Returns:
             {"reply": str, "strategy_used": str, "goal": str}
         """
-        system_prompt = self._build_system_prompt(card, goal_result)
-        user_prompt = self._build_user_prompt(ms, chat_history, my_last_message, conversation_context)
+        system_prompt = self._build_system_prompt(card, goal_result, burst_analysis)
+        user_prompt = self._build_user_prompt(ms, chat_history, my_last_message, conversation_context, burst_analysis)
 
         reply = llm_call(system_prompt, user_prompt)
         return {
@@ -62,13 +64,22 @@ class ReplyGenerator:
     # Prompt 构建
     # ============================================================
 
-    def _build_system_prompt(self, card: StrategyCard, goal_result: dict) -> str:
+    def _build_system_prompt(self, card: StrategyCard, goal_result: dict, burst_analysis: dict | None = None) -> str:
         """构建系统提示词：角色 + 策略规则 + 示例。"""
         parts = []
 
         parts.append("你是一个恋爱沟通助手，正在帮用户回复女方的消息。")
         parts.append("你的目标不是讨好对方，而是建立健康、平等的互动关系。")
         parts.append("回复要自然、真诚，不要像机器人，不要过度使用'呢''哦''呀'等语气词。")
+
+        # Burst awareness: when she sends many messages, reply must match the depth
+        if burst_analysis:
+            msg_count = burst_analysis.get("msg_count", 0)
+            if msg_count >= 5:
+                parts.append(f"重要：她连续发了 {msg_count} 条消息，不是一句随意的话。")
+                parts.append("你的回复必须逐点回应她提到的每个关键话题和问题，不要用一两句话敷衍。")
+                parts.append("如果她提出了具体问题，请逐一回答；如果她表达了情绪，请先共情再回应。")
+                parts.append("回复长度应该与她的消息量匹配——她发了多句，你就应该回多句。")
         parts.append("")
 
         # 当前目标
@@ -126,6 +137,7 @@ class ReplyGenerator:
         chat_history: Optional[list[dict]],
         my_last_message: Optional[str],
         conversation_context: Optional[str] = None,
+        burst_analysis: Optional[dict] = None,
     ) -> str:
         """构建用户提示词：关系上下文 + 对话上下文 + 对话历史 + 她的消息。"""
         parts = []
@@ -151,15 +163,25 @@ class ReplyGenerator:
             parts.append(f"## 我上一条发的消息\n{my_last_message}")
             parts.append("")
 
-        # 对话历史
+        # 对话历史 — burst 模式下扩大窗口
         if chat_history:
+            max_rounds = 20 if (burst_analysis and burst_analysis.get("msg_count", 0) >= 5) else 6
             parts.append("## 对话历史（时间顺序）")
-            for m in chat_history[-6:]:  # 最多 6 轮
+            for m in chat_history[-max_rounds:]:
                 role = "她" if m["role"] == "她" else "我"
                 parts.append(f"{role}: {m['content']}")
             parts.append("")
 
-        # 她的消息 + 分析（供参考）
+        # Burst 模式：逐条展示她的所有消息，让 LLM 看到完整内容
+        if burst_analysis and burst_analysis.get("msg_count", 0) >= 5:
+            her_msgs = burst_analysis.get("her_msgs", [])
+            if len(her_msgs) >= 3:
+                parts.append("## 她的全部消息（请逐一回应每个关键点）")
+                for i, msg in enumerate(her_msgs, 1):
+                    parts.append(f"{i}. {msg}")
+                parts.append("")
+
+        # 她的最新消息 + 分析（供参考）
         parts.append("## 她的最新消息")
         parts.append(ms.message)
         parts.append("")

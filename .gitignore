@@ -2,9 +2,17 @@
 ds.txt
 
 # Runtime data (personal, not for GitHub)
-data/conversations.json
-data/relationship_state.json
-data/mock_wcf_story_3000.jsonl
+data/
+
+# Runtime logs
+logs/
+injector.log
+
+# Old doc backups (duplicates of docs/)
+backend/docs/
+
+# Personal files
+简历-魔鬼聊天项目.md
 
 # Test output
 test_output/

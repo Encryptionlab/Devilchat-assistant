@@ -38,6 +38,10 @@ class PipelineState(TypedDict, total=False):
     recalled_memories: list
     llm_context: str
 
+    # Memory extraction (frequency-gated)
+    _extracted_memories: list[dict]
+    _msg_count_since_extract: int
+
     # Strategy Selection output
     strategy_name: str
     strategy_card: dict

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>魔鬼聊天 — WCF Panel</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font:14px/1.5 -apple-system,"Microsoft YaHei",sans-serif;background:#ededed;height:100dvh;display:flex;flex-direction:column}
+.topbar{height:44px;background:#2e2e2e;color:#fff;display:flex;align-items:center;padding:0 12px;justify-content:space-between;flex-shrink:0}
+.topbar h1{font-size:16px;font-weight:500}
+.topbar .status{font-size:12px;padding:2px 8px;border-radius:10px;background:#555}
+.topbar .status.on{background:#07c160}
+.msgs{flex:1;overflow-y:auto;padding:8px 12px;display:flex;flex-direction:column;gap:6px}
+.msg{max-width:80%;padding:8px 12px;border-radius:8px;word-break:break-word;position:relative}
+.msg.her{background:#fff;align-self:flex-start}
+.msg.me{background:#95ec69;align-self:flex-end}
+.msg .meta{font-size:10px;color:#999;margin-top:2px;display:flex;gap:6px}
+.msg .tag{font-size:10px;background:#eee;padding:0 4px;border-radius:3px}
+.msg.me .tag{background:#7ddb5c}
+.bottom{flex-shrink:0;padding:8px;background:#f7f7f7;border-top:1px solid #ddd;display:flex;gap:8px}
+.bottom input{flex:1;padding:8px 12px;border:1px solid #ddd;border-radius:20px;font-size:14px;outline:none}
+.bottom button{padding:8px 20px;border:none;border-radius:20px;background:#07c160;color:#fff;font-size:14px;cursor:pointer}
+.bottom button:disabled{background:#999;cursor:not-allowed}
+.info{text-align:center;color:#999;font-size:12px;padding:16px}
+.stats{font-size:11px;color:#999;padding:0 12px 4px;display:flex;gap:12px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>魔鬼聊天</h1>
+  <span id="status" class="status">连接中...</span>
+</div>
+
+<div class="stats" id="stats"></div>
+<div class="msgs" id="msgs"><div class="info">等待新消息...</div></div>
+
+<div class="bottom">
+  <input id="input" type="text" placeholder="输入回复..." autocomplete="off">
+  <button id="send" onclick="sendReply()" disabled>发送</button>
+</div>
+
+<script>
+const API = '/api/wcf';
+let totalMsgs = 0;
+
+async function refresh() {
+  try {
+    const [status, msgs] = await Promise.all([
+      fetch(API + '/status').then(r => r.json()),
+      fetch(API + '/messages?n=80').then(r => r.json()),
+    ]);
+    updateStatus(status);
+    updateMsgs(msgs);
+    updateStats(status);
+  } catch(e) {
+    document.getElementById('status').textContent = '离线';
+    document.getElementById('status').className = 'status';
+  }
+}
+
+function updateStatus(s) {
+  const el = document.getElementById('status');
+  el.textContent = s.wechat_logged_in ? '在线' : '离线';
+  el.className = 'status ' + (s.wechat_logged_in ? 'on' : '');
+  document.getElementById('send').disabled = !s.wechat_logged_in || !s.running;
+}
+
+function updateMsgs(msgs) {
+  if (!msgs.length) return;
+  const container = document.getElementById('msgs');
+  // Only add new messages
+  const current = container.children.length - (container.querySelector('.info') ? 1 : 0);
+  if (msgs.length === current) return;
+
+  const newMsgs = msgs.slice(current);
+  for (const m of newMsgs) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + m.role;
+    div.innerHTML = `<div>${esc(m.content)}</div>
+      <div class="meta">
+        <span>${fmtTs(m.timestamp)}</span>
+        ${m.emotion ? `<span class="tag">${m.emotion}</span>` : ''}
+        ${m.topic ? `<span class="tag">${m.topic}</span>` : ''}
+        ${m.reply_sent ? '<span class="tag">已回</span>' : ''}
+      </div>`;
+    container.appendChild(div);
+  }
+  // Remove placeholder
+  const info = container.querySelector('.info');
+  if (info && msgs.length > 0) info.remove();
+  // Auto-scroll
+  container.scrollTop = container.scrollHeight;
+}
+
+function updateStats(s) {
+  document.getElementById('stats').innerHTML =
+    `收:${s.total_received} 她:${s.her_messages} 我:${s.my_messages} 回:${s.replies_sent} ` +
+    (s.last_emotion ? `情绪:${s.last_emotion}` : '') +
+    (s.last_topic ? ` 话题:${s.last_topic}` : '');
+}
+
+async function sendReply() {
+  const input = document.getElementById('input');
+  const text = input.value.trim();
+  if (!text) return;
+  const btn = document.getElementById('send');
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const resp = await fetch(API + '/reply', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text}),
+    });
+    if (resp.ok) {
+      input.value = '';
+      // Optimistic: show my reply immediately
+      const container = document.getElementById('msgs');
+      const div = document.createElement('div');
+      div.className = 'msg me';
+      div.innerHTML = `<div>${esc(text)}</div><div class="meta"><span>刚刚</span><span class="tag">发送中</span></div>`;
+      container.appendChild(div);
+      container.scrollTop = container.scrollHeight;
+    }
+  } catch(e) {
+    alert('发送失败: ' + e.message);
+  }
+  btn.disabled = false;
+  btn.textContent = '发送';
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function fmtTs(ts) {
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return ts;
+    return d.toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit'});
+  } catch { return ts; }
+}
+
+// Enter to send
+document.getElementById('input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendReply();
+});
+
+// Poll every 1.5s
+refresh();
+setInterval(refresh, 1500);
+
+// Also try SSE for faster updates
+const evt = new EventSource(API + '/events');
+evt.onmessage = e => {
+  try {
+    const msgs = JSON.parse(e.data);
+    if (msgs.length) refresh();
+  } catch {}
+};
+</script>
+</body>
+</html>
