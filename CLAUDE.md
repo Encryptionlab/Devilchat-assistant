@@ -11,8 +11,7 @@ AI 辅助微信聊天系统。核心流水线：收到对方消息 → LLM 分�
 | 流水线编排 | LangGraph StateGraph (MemorySaver) |
 | 数据库 | SQLite (结构化) + ChromaDB (向量, all-MiniLM-L6-v2 384维) |
 | LLM 调用 | OpenCode API, 同步 requests 通过 `run_in_executor` 桥接到 async |
-| 微信接入 | WeChatFerry v39.5.1.0, DLL 注入微信 3.9.12.51 |
-| 入口 | `backend/main.py` (FastAPI), `backend/main_wcf.py` (WCF 中继) |
+| 入口 | `backend/main.py` (FastAPI) |
 
 ## 关键文件
 
@@ -24,8 +23,6 @@ backend/
 ├── db.py                     # SQLite/ChromaDB 连接 + Schema DDL
 ├── config.py                 # API Key / 路径 / 常量
 ├── services/llm_service.py   # LLM 异步调用器
-├── wcf/client.py             # WeChatFerry SDK 封装 (host=None=本地模式)
-└── wcf/relay.py              # 消息中继 (轮询微信DB → LangGraph)
 src/                          # 旧版核心模块 (新节点仍引用)
 ├── reply_generator.py        # Prompt构建 → LLM生成回复
 ├── expression_enhancer.py    # 回复润色
@@ -56,12 +53,10 @@ message_understanding → need_recognition → goal_planning → conversation_en
 
 ## 关键设计决策
 
-1. **WCF host=None 才是本地模式**: 传 `"127.0.0.1"` 会走远程模式，跳过 `WxInitSDK`，导致 DLL 不注入微信
-2. **微信实时推送不可用**: `enable_receiving_msg()` 在 v39.5.1.0 上超时，实际走 `query_sql()` 轮询微信内部数据库
-3. **observe 模式消息持久化**: `persist_result_node` 只在 intervene 模式执行，observe 模式需在 `_observe_handler` 里手动 INSERT
-4. **记忆双写**: `_persist_memories` 必须同时写 SQLite(`memories_sql`) 和 ChromaDB(`memories` collection)，否则向量检索无效
-5. **中文编码**: Windows 终端是 GBK，所有数据在 SQLite 中存 UTF-8。测试输出乱码不代表数据损坏
-6. **记忆衰减**: 每次 extract 前自动调用 `apply_decay` (每 ~15 条消息)。TTL 到期自动删除 + 同步 ChromaDB，情绪/冲突类记录置信度定期减半。见 `backend/memory/store.py:_DECAY_CONFIG`
+1. **observe 模式消息持久化**: `persist_result_node` 只在 intervene 模式执行，observe 模式需在入口层手动 INSERT
+2. **记忆双写**: `_persist_memories` 必须同时写 SQLite(`memories_sql`) 和 ChromaDB(`memories` collection)，否则向量检索无效
+3. **中文编码**: Windows 终端是 GBK，所有数据在 SQLite 中存 UTF-8。测试输出乱码不代表数据损坏
+4. **记忆衰减**: 每次 extract 前自动调用 `apply_decay` (每 ~15 条消息)。TTL 到期自动删除 + 同步 ChromaDB，情绪/冲突类记录置信度定期减半。见 `backend/memory/store.py:_DECAY_CONFIG`
 
 ### 记忆衰减规则
 
@@ -137,15 +132,7 @@ coll.add(ids=[mem_id], documents=[content], metadatas=[{...}])
 ```
 **教训**: **双写逻辑必须显式验证两端都有数据**。写一个检查脚本定期对比 `COUNT(*)` from SQLite vs `coll.count()` from ChromaDB
 
-### Bug 6: observe 模式消息丢失
-
-**文件**: `backend/main_wcf.py` (`_observe_handler`)
-**现象**: WCF 抓到的消息在内存中出现但未存入数据库
-**根因**: `persist_result_node` 只在 `mode == "intervene"` 时执行，observe 模式的消息走到 pipeline 的 END 分支就丢弃了
-**修复**: 在 `_observe_handler` 中调用 graph 之前，手动 INSERT 每条消息到 `messages` 表
-**教训**: **数据持久化不应依赖特定 pipeline 分支**。入口层就应该做持久化，而不是交给下游节点
-
-### Bug 7: 记忆提取静默失败 — JSON 解析无容错
+### Bug 6: 记忆提取静默失败 — JSON 解析无容错
 
 **文件**: `backend/graph/nodes/__init__.py` (`extract_memories_node`)
 **现象**: 同批消息，上次提取 8 条，下次 0 条。`msg_count_since_extract=0` 证明 gate 开了，但 LLM 返回不能被解析
@@ -156,7 +143,7 @@ coll.add(ids=[mem_id], documents=[content], metadatas=[{...}])
 3. `except Exception` 兜底防止未知异常崩溃节点
 **教训**: **LLM 输出 JSON 不可靠，必须做 defensive parsing**。至少处理代码块包裹、末尾多余文本、字段缺失三种情况。失败必须有日志，否则排查时一脸茫然
 
-### Bug 8: 回复中的 LLM 幻觉 — 发明不存在的信息
+### Bug 7: 回复中的 LLM 幻觉 — 发明不存在的信息
 
 **文件**: 流水线 reply_generate 环节（非代码缺陷，是 LLM 行为）
 **现象**: 对方说「小猪包那边闹别扭」「合作人」，系统回复加了「巨婴合作人」这个标签。原文无此表述

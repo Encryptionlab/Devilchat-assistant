@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone, timedelta
 from backend.graph.state import PipelineState
@@ -443,6 +444,43 @@ _MEMORY_EXTRACT_PROMPT = """你是一个关系记忆提取器。从以下对话�
 仅输出 JSON。"""
 
 
+def _parse_maybe_truncated_json(text: str) -> dict:
+    """Parse JSON that may be truncated mid-generation. Tries to close open structures."""
+    # First try direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Try to repair by closing unclosed structures
+    repaired = text
+    # Count open vs close
+    open_braces = repaired.count("{") - repaired.count("}")
+    open_brackets = repaired.count("[") - repaired.count("]")
+    # Close any open string by appending a quote if last non-whitespace char suggests it
+    stripped = repaired.rstrip()
+    if stripped and stripped[-1] == '"' and stripped.count('"') % 2 != 0:
+        pass  # already looks ok-ish, will be handled by brace/bracket closure
+    # Find last comma or colon and truncate to last valid position
+    for end_char in ['"}', '"]', '"}']:
+        # Try appending closures
+        test = stripped
+        if test.endswith(','):
+            test = test[:-1]
+        test = test + '}' * open_braces + ']' * open_brackets
+        try:
+            return json.loads(test)
+        except json.JSONDecodeError:
+            continue
+    # Last resort: add just enough closures
+    try:
+        return json.loads(repaired + '}' * open_braces + ']' * open_brackets)
+    except json.JSONDecodeError:
+        pass
+    # Give up, return empty
+    return {}
+
+
 async def extract_memories_node(state: PipelineState) -> dict:
     """Frequency-gated memory extraction. Runs every _EXTRACT_INTERVAL messages.
 
@@ -479,28 +517,32 @@ async def extract_memories_node(state: PipelineState) -> dict:
         lines.append(f"{role}: {m.get('content', '')}")
     conversation_text = "\n".join(lines)
 
-    # Call LLM for memory extraction
+    # Call LLM for memory extraction (retry on empty/truncated responses)
     llm = LlmService(api_key=load_api_key())
     memories = []
-    try:
-        result_text = await llm.chat(_MEMORY_EXTRACT_PROMPT, conversation_text)
-        # LLM may wrap JSON in ``` fences or add trailing text
-        result_text = result_text.strip()
-        if result_text.startswith("```"):
-            result_text = result_text.split("```")[1]
-            if result_text.startswith("json"):
-                result_text = result_text[4:]
+    for retry in range(3):
+        try:
+            result_text = await llm.chat(_MEMORY_EXTRACT_PROMPT, conversation_text)
             result_text = result_text.strip()
-        parsed = json.loads(result_text)
-        memories = parsed.get("memories", [])
-    except (json.JSONDecodeError, KeyError) as e:
-        # Log the raw output so we can debug format drift
-        import logging
-        logging.warning(f"extract_memories JSON parse error: {e}")
-        logging.warning(f"Raw LLM output (first 500 chars): {str(result_text)[:500]}")
-    except Exception as e:
-        import logging
-        logging.warning(f"extract_memories unexpected error: {type(e).__name__}: {e}")
+            if not result_text:
+                logging.warning(f"extract_memories: empty response, retry {retry+1}/3")
+                continue
+            # LLM may wrap JSON in ``` fences or add trailing text
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+                result_text = result_text.strip()
+            # Repair truncated JSON: close open strings/arrays/objects
+            parsed = _parse_maybe_truncated_json(result_text)
+            memories = parsed.get("memories", [])
+            break
+        except (json.JSONDecodeError, KeyError) as e:
+            logging.warning(f"extract_memories JSON parse error (retry {retry+1}/3): {e}")
+            logging.warning(f"Raw LLM output (first 500 chars): {str(result_text)[:500]}")
+        except Exception as e:
+            logging.warning(f"extract_memories unexpected error (retry {retry+1}/3): {type(e).__name__}: {e}")
+            break  # non-JSON errors are likely not recoverable
 
     # Persist new memories (dedup + dual-write)
     if memories:
